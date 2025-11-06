@@ -1,0 +1,341 @@
+# configuration.yaml - Home Assistant Comune di Magliano in Toscana
+
+homeassistant:
+name: CER Magliano - Comune
+latitude: 42.5944
+longitude: 11.2903
+elevation: 128
+unit_system: metric
+time_zone: Europe/Rome
+currency: EUR
+country: IT
+
+# Database per storico lungo
+
+recorder:
+db_url: postgresql://ha_user:password@localhost/cer_magliano
+purge_keep_days: 730
+include:
+domains:
+- sensor
+- switch
+entities:
+- sensor.produzione_totale_comune
+- sensor.consumo_totale_comune
+- sensor.energia_condivisa
+
+# InfluxDB per analisi avanzate
+
+influxdb:
+host: localhost
+port: 8086
+database: cer_magliano
+username: admin
+password: password
+max_retries: 3
+default_measurement: state
+include:
+entities:
+- sensor.produzione_*
+- sensor.consumo_*
+- sensor.prezzo_pun
+
+# MQTT per comunicazione con n8n e altri sistemi
+
+mqtt:
+broker: localhost
+port: 1883
+username: cer_mqtt
+password: password
+discovery: true
+birth_message:
+topic: ‘homeassistant/status’
+payload: ‘online’
+
+# RESTful API per n8n
+
+rest_command:
+invia_dati_n8n:
+url: ‘https://n8n.cermagliano.local/webhook/dati-orari’
+method: POST
+headers:
+Authorization: ‘Bearer TOKEN_SICURO’
+payload: >
+{
+“timestamp”: “{{ now().isoformat() }}”,
+“sede”: “{{ sede }}”,
+“produzione_kwh”: {{ produzione }},
+“consumo_kwh”: {{ consumo }},
+“autoconsumo_kwh”: {{ autoconsumo }}
+}
+
+# MODBUS per lettura inverter fotovoltaici
+
+modbus:
+
+- name: inverter_municipio
+  type: tcp
+  host: 192.168.1.100
+  port: 502
+  sensors:
+  - name: “Produzione Municipio”
+    address: 40083
+    unit_of_measurement: “W”
+    device_class: power
+    state_class: measurement
+    scale: 0.1
+    precision: 1
+  - name: “Energia Totale Municipio”
+    address: 40093
+    unit_of_measurement: “kWh”
+    device_class: energy
+    state_class: total_increasing
+    scale: 0.1
+    precision: 2
+- name: inverter_scuola_elementare
+  type: tcp
+  host: 192.168.1.101
+  port: 502
+  sensors:
+  - name: “Produzione Scuola Elementare”
+    address: 40083
+    unit_of_measurement: “W”
+    device_class: power
+    state_class: measurement
+    scale: 0.1
+- name: inverter_palestra
+  type: tcp
+  host: 192.168.1.102
+  port: 502
+  sensors:
+  - name: “Produzione Palestra”
+    address: 40083
+    unit_of_measurement: “W”
+    device_class: power
+    state_class: measurement
+    scale: 0.1
+
+# Smart meter e contatori Enel/E-Distribuzione
+
+sensor:
+
+# Prezzo PUN da API ARERA
+
+- platform: rest
+  name: Prezzo PUN Orario
+  resource: https://api.example.com/pun/current
+  value_template: ‘{{ value_json.price }}’
+  unit_of_measurement: ‘€/kWh’
+  scan_interval: 3600
+
+# Aggregazione produzione totale comune
+
+- platform: template
+  sensors:
+  produzione_totale_comune:
+  friendly_name: “Produzione Totale Comune”
+  unit_of_measurement: “W”
+  device_class: power
+  value_template: >
+  {{ states(‘sensor.produzione_municipio’)|float(0) +
+  states(‘sensor.produzione_scuola_elementare’)|float(0) +
+  states(‘sensor.produzione_palestra’)|float(0) }}
+  
+  # Consumo totale edifici comunali
+  
+  consumo_totale_comune:
+  friendly_name: “Consumo Totale Comune”
+  unit_of_measurement: “W”
+  device_class: power
+  value_template: >
+  {{ states(‘sensor.consumo_municipio’)|float(0) +
+  states(‘sensor.consumo_scuola_elementare’)|float(0) +
+  states(‘sensor.consumo_palestra’)|float(0) +
+  states(‘sensor.consumo_illuminazione_pubblica’)|float(0) }}
+  
+  # Autoconsumo istantaneo
+  
+  autoconsumo_istantaneo:
+  friendly_name: “Autoconsumo Istantaneo”
+  unit_of_measurement: “W”
+  device_class: power
+  value_template: >
+  {% set prod = states(‘sensor.produzione_totale_comune’)|float(0) %}
+  {% set cons = states(‘sensor.consumo_totale_comune’)|float(0) %}
+  {{ [prod, cons]|min }}
+  
+  # Energia immessa in rete
+  
+  energia_immessa:
+  friendly_name: “Energia Immessa in Rete”
+  unit_of_measurement: “W”
+  device_class: power
+  value_template: >
+  {% set prod = states(‘sensor.produzione_totale_comune’)|float(0) %}
+  {% set cons = states(‘sensor.consumo_totale_comune’)|float(0) %}
+  {{ [prod - cons, 0]|max }}
+  
+  # Energia prelevata dalla rete
+  
+  energia_prelevata:
+  friendly_name: “Energia Prelevata dalla Rete”
+  unit_of_measurement: “W”
+  device_class: power
+  value_template: >
+  {% set prod = states(‘sensor.produzione_totale_comune’)|float(0) %}
+  {% set cons = states(‘sensor.consumo_totale_comune’)|float(0) %}
+  {{ [cons - prod, 0]|max }}
+
+# Utility meter per calcoli orari/giornalieri/mensili
+
+utility_meter:
+produzione_oraria:
+source: sensor.produzione_totale_comune
+cycle: hourly
+
+produzione_giornaliera:
+source: sensor.produzione_totale_comune
+cycle: daily
+
+produzione_mensile:
+source: sensor.produzione_totale_comune
+cycle: monthly
+
+consumo_orario:
+source: sensor.consumo_totale_comune
+cycle: hourly
+
+consumo_giornaliero:
+source: sensor.consumo_totale_comune
+cycle: daily
+
+consumo_mensile:
+source: sensor.consumo_totale_comune
+cycle: monthly
+
+# Automazioni
+
+automation:
+
+# Invio dati orari a n8n
+
+- id: invio_dati_orari_n8n
+  alias: “Invio Dati Orari a n8n”
+  trigger:
+  - platform: time_pattern
+    minutes: 0
+    action:
+  - service: rest_command.invia_dati_n8n
+    data:
+    sede: “comune”
+    produzione: “{{ states(‘sensor.produzione_oraria’) }}”
+    consumo: “{{ states(‘sensor.consumo_orario’) }}”
+    autoconsumo: “{{ states(‘sensor.autoconsumo_istantaneo’) }}”
+  
+  # Pubblica su MQTT
+  - service: mqtt.publish
+    data:
+    topic: “cer/magliano/comune/orario”
+    payload: >
+    {
+    “timestamp”: “{{ now().isoformat() }}”,
+    “produzione_kwh”: {{ states(‘sensor.produzione_oraria’) }},
+    “consumo_kwh”: {{ states(‘sensor.consumo_orario’) }},
+    “autoconsumo_kwh”: {{ states(‘sensor.autoconsumo_istantaneo’) }},
+    “immessa_kwh”: {{ states(‘sensor.energia_immessa’) }},
+    “prelevata_kwh”: {{ states(‘sensor.energia_prelevata’) }}
+    }
+    retain: true
+
+# Alert anomalie produzione
+
+- id: alert_produzione_bassa
+  alias: “Alert Produzione Anomala”
+  trigger:
+  - platform: numeric_state
+    entity_id: sensor.produzione_totale_comune
+    below: 1000
+    for:
+    hours: 2
+    condition:
+  - condition: sun
+    after: sunrise
+    after_offset: “01:00:00”
+  - condition: sun
+    before: sunset
+    before_offset: “-01:00:00”
+    action:
+  - service: notify.telegram
+    data:
+    message: “⚠️ Produzione fotovoltaica anomala: {{ states(‘sensor.produzione_totale_comune’) }}W”
+  - service: mqtt.publish
+    data:
+    topic: “cer/magliano/alerts”
+    payload: “produzione_bassa”
+
+# Ottimizzazione carichi (esempio illuminazione pubblica)
+
+- id: gestione_illuminazione_intelligente
+  alias: “Gestione Intelligente Illuminazione”
+  trigger:
+  - platform: numeric_state
+    entity_id: sensor.energia_immessa
+    above: 5000
+    condition:
+  - condition: time
+    after: “12:00:00”
+    before: “16:00:00”
+    action:
+  - service: notify.telegram
+    data:
+    message: “💡 Surplus energetico: {{ states(‘sensor.energia_immessa’) }}W disponibili per carichi differibili”
+
+# Dashboard Lovelace personalizzata
+
+lovelace:
+mode: yaml
+resources:
+- url: /local/mini-graph-card.js
+type: module
+dashboards:
+cer-dashboard:
+mode: yaml
+title: CER Magliano
+filename: cer_dashboard.yaml
+
+# Notifiche
+
+notify:
+
+- name: telegram
+  platform: telegram
+  chat_id: !secret telegram_chat_id
+
+# Input per configurazione manuale
+
+input_number:
+tariffa_incentivo_cer:
+name: Tariffa Incentivo CER
+min: 0
+max: 0.2
+step: 0.001
+unit_of_measurement: ‘€/kWh’
+initial: 0.119
+
+percentuale_comune:
+name: Percentuale Ripartizione Comune
+min: 0
+max: 100
+step: 1
+unit_of_measurement: ‘%’
+initial: 40
+
+# Integrazione meteo per previsioni produzione
+
+weather:
+
+- platform: openweathermap
+  api_key: !secret openweather_api_key
+  latitude: 42.5944
+  longitude: 11.2903
+  mode: daily
