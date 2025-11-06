@@ -1,0 +1,639 @@
+{
+“name”: “CER Magliano - Gestione Alert e Anomalie”,
+“nodes”: [
+{
+“parameters”: {
+“rule”: {
+“interval”: [
+{
+“field”: “minutes”,
+“minutesInterval”: 15
+}
+]
+}
+},
+“name”: “Trigger Controllo Periodico”,
+“type”: “n8n-nodes-base.scheduleTrigger”,
+“position”: [250, 300],
+“id”: “trigger-alert”
+},
+{
+“parameters”: {
+“operation”: “executeQuery”,
+“query”: “– Verifica produzione anomala impianti\nSELECT \n  i.nome_impianto,\n  i.id as impianto_id,\n  COALESCE(SUM(p.energia_prodotta_kwh), 0) as produzione_ultima_ora,\n  i.potenza_nominale_kw\nFROM impianti i\nLEFT JOIN produzione_oraria p ON i.id = p.impianto_id \n  AND p.timestamp > NOW() - INTERVAL ‘1 hour’\nWHERE i.attivo = true\nGROUP BY i.id, i.nome_impianto, i.potenza_nominale_kw\nHAVING \n  – Durante ore solari, produzione troppo bassa\n  (EXTRACT(HOUR FROM NOW()) BETWEEN 10 AND 16 \n   AND COALESCE(SUM(p.energia_prodotta_kwh), 0) < (i.potenza_nominale_kw * 0.1))\n  OR\n  – Nessun dato ricevuto\n  (COALESCE(SUM(p.energia_prodotta_kwh), 0) = 0 \n   AND EXTRACT(HOUR FROM NOW()) BETWEEN 8 AND 18)”
+},
+“name”: “Check Produzione Anomala”,
+“type”: “n8n-nodes-base.postgres”,
+“position”: [450, 200],
+“credentials”: {
+“postgres”: {
+“id”: “1”,
+“name”: “PostgreSQL CER”
+}
+},
+“id”: “check-produzione”
+},
+{
+“parameters”: {
+“operation”: “executeQuery”,
+“query”: “– Verifica consumo anomalo\nSELECT \n  m.nome,\n  m.id as membro_id,\n  m.tipo_membro,\n  COALESCE(SUM(c.energia_consumata_kwh), 0) as consumo_ultima_ora,\n  AVG(c_media.consumo_medio) as consumo_medio_storico\nFROM membri m\nLEFT JOIN consumo_orario c ON m.id = c.membro_id \n  AND c.timestamp > NOW() - INTERVAL ‘1 hour’\nLEFT JOIN LATERAL (\n  SELECT AVG(energia_consumata_kwh) as consumo_medio\n  FROM consumo_orario\n  WHERE membro_id = m.id\n    AND timestamp > NOW() - INTERVAL ‘30 days’\n    AND EXTRACT(HOUR FROM timestamp) = EXTRACT(HOUR FROM NOW())\n) c_media ON true\nWHERE m.attivo = true\nGROUP BY m.id, m.nome, m.tipo_membro\nHAVING \n  – Consumo > 200% della media storica\n  COALESCE(SUM(c.energia_consumata_kwh), 0) > (AVG(c_media.consumo_medio) * 2)\n  OR\n  – Nessun dato consumo quando previsto\n  (COALESCE(SUM(c.energia_consumata_kwh), 0) = 0 \n   AND AVG(c_media.consumo_medio) > 0)”
+},
+“name”: “Check Consumo Anomalo”,
+“type”: “n8n-nodes-base.postgres”,
+“position”: [450, 400],
+“credentials”: {
+“postgres”: {
+“id”: “1”,
+“name”: “PostgreSQL CER”
+}
+},
+“id”: “check-consumo”
+},
+{
+“parameters”: {
+“operation”: “executeQuery”,
+“query”: “– Verifica autoconsumo troppo basso\nSELECT \n  DATE(timestamp) as data,\n  AVG(percentuale_autoconsumo) as autoconsumo_medio,\n  SUM(energia_condivisa_kwh) as energia_condivisa_giorno\nFROM energia_condivisa_oraria\nWHERE DATE(timestamp) = CURRENT_DATE\nGROUP BY DATE(timestamp)\nHAVING AVG(percentuale_autoconsumo) < 40”
+},
+“name”: “Check Autoconsumo Basso”,
+“type”: “n8n-nodes-base.postgres”,
+“position”: [450, 600],
+“credentials”: {
+“postgres”: {
+“id”: “1”,
+“name”: “PostgreSQL CER”
+}
+},
+“id”: “check-autoconsumo”
+},
+{
+“parameters”: {
+“conditions”: {
+“number”: [
+{
+“value1”: “={{ $json.length }}”,
+“operation”: “larger”,
+“value2”: 0
+}
+]
+}
+},
+“name”: “IF Anomalie Produzione”,
+“type”: “n8n-nodes-base.if”,
+“position”: [650, 200],
+“id”: “if-prod-anomalie”
+},
+{
+“parameters”: {
+“conditions”: {
+“number”: [
+{
+“value1”: “={{ $json.length }}”,
+“operation”: “larger”,
+“value2”: 0
+}
+]
+}
+},
+“name”: “IF Anomalie Consumo”,
+“type”: “n8n-nodes-base.if”,
+“position”: [650, 400],
+“id”: “if-cons-anomalie”
+},
+{
+“parameters”: {
+“conditions”: {
+“number”: [
+{
+“value1”: “={{ $json.length }}”,
+“operation”: “larger”,
+“value2”: 0
+}
+]
+}
+},
+“name”: “IF Autoconsumo Critico”,
+“type”: “n8n-nodes-base.if”,
+“position”: [650, 600],
+“id”: “if-autocons-critico”
+},
+{
+“parameters”: {
+“operation”: “executeQuery”,
+“query”: “INSERT INTO alert (\n  tipo_alert,\n  priorita,\n  titolo,\n  messaggio,\n  impianto_id\n) VALUES (\n  ‘produzione_anomala’,\n  ‘alta’,\n  ‘Produzione anomala: {{ $json.nome_impianto }}’,\n  ‘Produzione ultima ora: {{ $json.produzione_ultima_ora }} kWh (attesa: ~{{ $json.potenza_nominale_kw * 0.5 }} kWh)’,\n  ‘{{ $json.impianto_id }}’\n)”
+},
+“name”: “Registra Alert Produzione”,
+“type”: “n8n-nodes-base.postgres”,
+“position”: [850, 200],
+“credentials”: {
+“postgres”: {
+“id”: “1”,
+“name”: “PostgreSQL CER”
+}
+},
+“id”: “log-alert-prod”
+},
+{
+“parameters”: {
+“operation”: “executeQuery”,
+“query”: “INSERT INTO alert (\n  tipo_alert,\n  priorita,\n  titolo,\n  messaggio,\n  membro_id\n) VALUES (\n  ‘consumo_anomalo’,\n  ‘media’,\n  ‘Consumo anomalo: {{ $json.nome }}’,\n  ‘Consumo ultima ora: {{ $json.consumo_ultima_ora }} kWh (media storica: {{ $json.consumo_medio_storico }} kWh)’,\n  ‘{{ $json.membro_id }}’\n)”
+},
+“name”: “Registra Alert Consumo”,
+“type”: “n8n-nodes-base.postgres”,
+“position”: [850, 400],
+“credentials”: {
+“postgres”: {
+“id”: “1”,
+“name”: “PostgreSQL CER”
+}
+},
+“id”: “log-alert-cons”
+},
+{
+“parameters”: {
+“operation”: “executeQuery”,
+“query”: “INSERT INTO alert (\n  tipo_alert,\n  priorita,\n  titolo,\n  messaggio\n) VALUES (\n  ‘autoconsumo_basso’,\n  ‘alta’,\n  ‘Autoconsumo giornaliero sotto soglia’,\n  ‘Autoconsumo medio oggi: {{ $json.autoconsumo_medio }}% (target: >60%). Energia condivisa: {{ $json.energia_condivisa_giorno }} kWh. Suggerimento: valutare spostamento carichi o installazione accumuli.’\n)”
+},
+“name”: “Registra Alert Autoconsumo”,
+“type”: “n8n-nodes-base.postgres”,
+“position”: [850, 600],
+“credentials”: {
+“postgres”: {
+“id”: “1”,
+“name”: “PostgreSQL CER”
+}
+},
+“id”: “log-alert-autocons”
+},
+{
+“parameters”: {
+“chatId”: “{{ $json.telegram_admin_id }}”,
+“text”: “🔴 *ALERT PRODUZIONE*\n\nImpianto: {{ $json.nome_impianto }}\nProduzione ultima ora: {{ $json.produzione_ultima_ora }} kWh\nPotenza nominale: {{ $json.potenza_nominale_kw }} kWp\n\n⚠️ Produzione inferiore al 10% del nominale durante ore solari.\nVerificare possibili guasti o ombreggiamenti.”,
+“additionalFields”: {
+“parse_mode”: “Markdown”
+}
+},
+“name”: “Notifica Telegram Produzione”,
+“type”: “n8n-nodes-base.telegram”,
+“position”: [1050, 200],
+“credentials”: {
+“telegramApi”: {
+“id”: “3”,
+“name”: “Telegram Bot CER”
+}
+},
+“id”: “notify-prod”
+},
+{
+“parameters”: {
+“chatId”: “{{ $json.telegram_admin_id }}”,
+“text”: “🟡 *Alert Consumo*\n\nMembro: {{ $json.nome }}\nTipo: {{ $json.tipo_membro }}\nConsumo ultima ora: {{ $json.consumo_ultima_ora }} kWh\nMedia storica: {{ $json.consumo_medio_storico }} kWh\n\nℹ️ Consumo oltre il doppio della media. Potrebbe essere normale o indicare anomalie.”,
+“additionalFields”: {
+“parse_mode”: “Markdown”
+}
+},
+“name”: “Notifica Telegram Consumo”,
+“type”: “n8n-nodes-base.telegram”,
+“position”: [1050, 400],
+“credentials”: {
+“telegramApi”: {
+“id”: “3”,
+“name”: “Telegram Bot CER”
+}
+},
+“id”: “notify-cons”
+},
+{
+“parameters”: {
+“chatId”: “{{ $json.telegram_gruppo_cer }}”,
+“text”: “📊 *Alert Autoconsumo Basso*\n\nAutoconsumo medio oggi: {{ $json.autoconsumo_medio }}%\nTarget: >60%\n\nEnergia condivisa oggi: {{ $json.energia_condivisa_giorno }} kWh\n\n💡 *Raccomandazioni:*\n• Spostare carichi energivori in ore di produzione solare\n• Valutare installazione sistemi di accumulo\n• Verificare programmazione elettrodomestici\n\nContatta il referente CER per ottimizzazione.”,
+“additionalFields”: {
+“parse_mode”: “Markdown”
+}
+},
+“name”: “Notifica Telegram Autoconsumo”,
+“type”: “n8n-nodes-base.telegram”,
+“position”: [1050, 600],
+“credentials”: {
+“telegramApi”: {
+“id”: “3”,
+“name”: “Telegram Bot CER”
+}
+},
+“id”: “notify-autocons”
+},
+{
+“parameters”: {
+“fromEmail”: “alert@cermagliano.local”,
+“toEmail”: “energia@comune.magliano.gr.it”,
+“subject”: “🔴 CER Alert: Produzione Anomala - {{ $json.nome_impianto }}”,
+“emailType”: “html”,
+“message”: “<h2>Alert Produzione Anomala</h2>\n<p><strong>Impianto:</strong> {{ $json.nome_impianto }}</p>\n<p><strong>Produzione ultima ora:</strong> {{ $json.produzione_ultima_ora }} kWh</p>\n<p><strong>Potenza nominale:</strong> {{ $json.potenza_nominale_kw }} kWp</p>\n<p><strong>Produzione attesa:</strong> ~{{ $json.potenza_nominale_kw * 0.5 }} kWh</p>\n<hr>\n<p><strong>Azione richiesta:</strong> Verificare impianto per possibili guasti, ombreggiamenti o manutenzione necessaria.</p>”
+},
+“name”: “Email Alert Produzione”,
+“type”: “n8n-nodes-base.emailSend”,
+“position”: [1050, 100],
+“credentials”: {
+“smtp”: {
+“id”: “7”,
+“name”: “SMTP Comune”
+}
+},
+“id”: “email-prod”
+},
+{
+“parameters”: {
+“operation”: “executeQuery”,
+“query”: “– Check dati mancanti (nessun aggiornamento da >2 ore)\nSELECT \n  m.nome,\n  m.tipo_membro,\n  MAX(c.timestamp) as ultimo_aggiornamento,\n  EXTRACT(EPOCH FROM (NOW() - MAX(c.timestamp)))/3600 as ore_da_ultimo_dato\nFROM membri m\nLEFT JOIN consumo_orario c ON m.id = c.membro_id\nWHERE m.attivo = true\nGROUP BY m.id, m.nome, m.tipo_membro\nHAVING MAX(c.timestamp) < NOW() - INTERVAL ‘2 hours’\n  OR MAX(c.timestamp) IS NULL”
+},
+“name”: “Check Dati Mancanti”,
+“type”: “n8n-nodes-base.postgres”,
+“position”: [450, 800],
+“credentials”: {
+“postgres”: {
+“id”: “1”,
+“name”: “PostgreSQL CER”
+}
+},
+“id”: “check-dati-mancanti”
+},
+{
+“parameters”: {
+“conditions”: {
+“number”: [
+{
+“value1”: “={{ $json.length }}”,
+“operation”: “larger”,
+“value2”: 0
+}
+]
+}
+},
+“name”: “IF Dati Mancanti”,
+“type”: “n8n-nodes-base.if”,
+“position”: [650, 800],
+“id”: “if-dati-mancanti”
+},
+{
+“parameters”: {
+“operation”: “executeQuery”,
+“query”: “INSERT INTO alert (\n  tipo_alert,\n  priorita,\n  titolo,\n  messaggio,\n  membro_id\n) VALUES (\n  ‘dati_mancanti’,\n  ‘critica’,\n  ‘Dati mancanti: {{ $json.nome }}’,\n  ‘Nessun dato ricevuto da {{ $json.ore_da_ultimo_dato }} ore. Ultimo aggiornamento: {{ $json.ultimo_aggiornamento }}. Verificare connettività Home Assistant.’,\n  (SELECT id FROM membri WHERE nome = ‘{{ $json.nome }}’)\n)”
+},
+“name”: “Registra Alert Dati Mancanti”,
+“type”: “n8n-nodes-base.postgres”,
+“position”: [850, 800],
+“credentials”: {
+“postgres”: {
+“id”: “1”,
+“name”: “PostgreSQL CER”
+}
+},
+“id”: “log-dati-mancanti”
+},
+{
+“parameters”: {
+“chatId”: “{{ $json.telegram_admin_id }}”,
+“text”: “🔴 *ALERT CRITICO: Dati Mancanti*\n\nMembro: {{ $json.nome }}\nTipo: {{ $json.tipo_membro }}\n\n⏱ Ultimo aggiornamento: {{ $json.ultimo_aggiornamento }}\n⌛ Ore senza dati: {{ Math.round($json.ore_da_ultimo_dato) }}\n\n⚠️ *AZIONE URGENTE:*\nVerificare connettività e stato Home Assistant del membro.\n\nContatti:\n• Email: {{ $json.email }}\n• Telefono: {{ $json.telefono }}”,
+“additionalFields”: {
+“parse_mode”: “Markdown”
+}
+},
+“name”: “Notifica Dati Mancanti”,
+“type”: “n8n-nodes-base.telegram”,
+“position”: [1050, 800],
+“credentials”: {
+“telegramApi”: {
+“id”: “3”,
+“name”: “Telegram Bot CER”
+}
+},
+“id”: “notify-dati-mancanti”
+},
+{
+“parameters”: {
+“operation”: “executeQuery”,
+“query”: “– Verifica discrepanze con GSE (se disponibili dati GSE)\nSELECT \n  DATE(ec.timestamp) as data,\n  SUM(ec.energia_condivisa_kwh) as energia_condivisa_calcolata,\n  gse.energia_condivisa as energia_condivisa_gse,\n  ABS(SUM(ec.energia_condivisa_kwh) - gse.energia_condivisa) as differenza\nFROM energia_condivisa_oraria ec\nLEFT JOIN dati_gse gse ON DATE(ec.timestamp) = gse.data\nWHERE DATE(ec.timestamp) >= CURRENT_DATE - INTERVAL ‘7 days’\n  AND gse.energia_condivisa IS NOT NULL\nGROUP BY DATE(ec.timestamp), gse.energia_condivisa\nHAVING ABS(SUM(ec.energia_condivisa_kwh) - gse.energia_condivisa) > 5”
+},
+“name”: “Check Discrepanze GSE”,
+“type”: “n8n-nodes-base.postgres”,
+“position”: [450, 1000],
+“credentials”: {
+“postgres”: {
+“id”: “1”,
+“name”: “PostgreSQL CER”
+}
+},
+“id”: “check-gse”
+},
+{
+“parameters”: {
+“operation”: “executeQuery”,
+“query”: “– Riassunto alert aperti\nSELECT \n  priorita,\n  COUNT(*) as numero_alert,\n  STRING_AGG(DISTINCT tipo_alert, ’, ’) as tipi_alert\nFROM alert\nWHERE risolto = false\n  AND timestamp > NOW() - INTERVAL ‘24 hours’\nGROUP BY priorita\nORDER BY \n  CASE priorita\n    WHEN ‘critica’ THEN 1\n    WHEN ‘alta’ THEN 2\n    WHEN ‘media’ THEN 3\n    WHEN ‘bassa’ THEN 4\n  END”
+},
+“name”: “Riepilogo Alert Aperti”,
+“type”: “n8n-nodes-base.postgres”,
+“position”: [1250, 500],
+“credentials”: {
+“postgres”: {
+“id”: “1”,
+“name”: “PostgreSQL CER”
+}
+},
+“id”: “riepilogo-alert”
+},
+{
+“parameters”: {
+“conditions”: {
+“number”: [
+{
+“value1”: “={{ $json.length }}”,
+“operation”: “larger”,
+“value2”: 0
+}
+]
+}
+},
+“name”: “IF Alert Aperti”,
+“type”: “n8n-nodes-base.if”,
+“position”: [1450, 500],
+“id”: “if-alert-aperti”
+},
+{
+“parameters”: {
+“jsCode”: “const items = $input.all();\nlet message = ‘📋 *Riepilogo Alert CER - Ultime 24h*\n\n’;\n\nfor (const item of items) {\n  const priorita = item.json.priorita;\n  const numero = item.json.numero_alert;\n  const tipi = item.json.tipi_alert;\n  \n  let emoji = ‘🔵’;\n  if (priorita === ‘critica’) emoji = ‘🔴’;\n  else if (priorita === ‘alta’) emoji = ‘🟠’;\n  else if (priorita === ‘media’) emoji = ‘🟡’;\n  \n  message += `${emoji} *${priorita.toUpperCase()}*: ${numero} alert\\n`;\n  message += `   Tipi: ${tipi}\\n\\n`;\n}\n\nmessage += ‘\n📊 Dettagli completi su: https://cermagliano.local/grafana’;\n\nreturn [{\n  json: {\n    message: message,\n    total_alerts: items.reduce((sum, item) => sum + item.json.numero_alert, 0)\n  }\n}];”
+},
+“name”: “Prepara Messaggio Riepilogo”,
+“type”: “n8n-nodes-base.code”,
+“position”: [1650, 500],
+“id”: “prep-riepilogo”
+},
+{
+“parameters”: {
+“chatId”: “{{ $json.telegram_admin_id }}”,
+“text”: “={{ $json.message }}”,
+“additionalFields”: {
+“parse_mode”: “Markdown”
+}
+},
+“name”: “Invia Riepilogo Telegram”,
+“type”: “n8n-nodes-base.telegram”,
+“position”: [1850, 500],
+“credentials”: {
+“telegramApi”: {
+“id”: “3”,
+“name”: “Telegram Bot CER”
+}
+},
+“id”: “send-riepilogo”
+}
+],
+“connections”: {
+“Trigger Controllo Periodico”: {
+“main”: [
+[
+{
+“node”: “Check Produzione Anomala”,
+“type”: “main”,
+“index”: 0
+},
+{
+“node”: “Check Consumo Anomalo”,
+“type”: “main”,
+“index”: 0
+},
+{
+“node”: “Check Autoconsumo Basso”,
+“type”: “main”,
+“index”: 0
+},
+{
+“node”: “Check Dati Mancanti”,
+“type”: “main”,
+“index”: 0
+},
+{
+“node”: “Check Discrepanze GSE”,
+“type”: “main”,
+“index”: 0
+}
+]
+]
+},
+“Check Produzione Anomala”: {
+“main”: [
+[
+{
+“node”: “IF Anomalie Produzione”,
+“type”: “main”,
+“index”: 0
+}
+]
+]
+},
+“Check Consumo Anomalo”: {
+“main”: [
+[
+{
+“node”: “IF Anomalie Consumo”,
+“type”: “main”,
+“index”: 0
+}
+]
+]
+},
+“Check Autoconsumo Basso”: {
+“main”: [
+[
+{
+“node”: “IF Autoconsumo Critico”,
+“type”: “main”,
+“index”: 0
+}
+]
+]
+},
+“IF Anomalie Produzione”: {
+“main”: [
+[
+{
+“node”: “Registra Alert Produzione”,
+“type”: “main”,
+“index”: 0
+}
+]
+]
+},
+“IF Anomalie Consumo”: {
+“main”: [
+[
+{
+“node”: “Registra Alert Consumo”,
+“type”: “main”,
+“index”: 0
+}
+]
+]
+},
+“IF Autoconsumo Critico”: {
+“main”: [
+[
+{
+“node”: “Registra Alert Autoconsumo”,
+“type”: “main”,
+“index”: 0
+}
+]
+]
+},
+“Registra Alert Produzione”: {
+“main”: [
+[
+{
+“node”: “Notifica Telegram Produzione”,
+“type”: “main”,
+“index”: 0
+},
+{
+“node”: “Email Alert Produzione”,
+“type”: “main”,
+“index”: 0
+}
+]
+]
+},
+“Registra Alert Consumo”: {
+“main”: [
+[
+{
+“node”: “Notifica Telegram Consumo”,
+“type”: “main”,
+“index”: 0
+}
+]
+]
+},
+“Registra Alert Autoconsumo”: {
+“main”: [
+[
+{
+“node”: “Notifica Telegram Autoconsumo”,
+“type”: “main”,
+“index”: 0
+}
+]
+]
+},
+“Check Dati Mancanti”: {
+“main”: [
+[
+{
+“node”: “IF Dati Mancanti”,
+“type”: “main”,
+“index”: 0
+}
+]
+]
+},
+“IF Dati Mancanti”: {
+“main”: [
+[
+{
+“node”: “Registra Alert Dati Mancanti”,
+“type”: “main”,
+“index”: 0
+}
+]
+]
+},
+“Registra Alert Dati Mancanti”: {
+“main”: [
+[
+{
+“node”: “Notifica Dati Mancanti”,
+“type”: “main”,
+“index”: 0
+}
+]
+]
+},
+“Notifica Telegram Produzione”: {
+“main”: [
+[
+{
+“node”: “Riepilogo Alert Aperti”,
+“type”: “main”,
+“index”: 0
+}
+]
+]
+},
+“Notifica Telegram Consumo”: {
+“main”: [
+[
+{
+“node”: “Riepilogo Alert Aperti”,
+“type”: “main”,
+“index”: 0
+}
+]
+]
+},
+“Notifica Telegram Autoconsumo”: {
+“main”: [
+[
+{
+“node”: “Riepilogo Alert Aperti”,
+“type”: “main”,
+“index”: 0
+}
+]
+]
+},
+“Notifica Dati Mancanti”: {
+“main”: [
+[
+{
+“node”: “Riepilogo Alert Aperti”,
+“type”: “main”,
+“index”: 0
+}
+]
+]
+},
+“Riepilogo Alert Aperti”: {
+“main”: [
+[
+{
+“node”: “IF Alert Aperti”,
+“type”: “main”,
+“index”: 0
+}
+]
+]
+},
+“IF Alert Aperti”: {
+“main”: [
+[
+{
+“node”: “Prepara Messaggio Riepilogo”,
+“type”: “main”,
+“index”: 0
+}
+]
+]
+},
+“Prepara Messaggio Riepilogo”: {
+“main”: [
+[
+{
+“node”: “Invia Riepilogo Telegram”,
+“type”: “main”,
+“index”: 0
+}
+]
+]
+}
+},
+“settings”: {
+“executionOrder”: “v1”
+}
+}
