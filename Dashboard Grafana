@@ -1,0 +1,519 @@
+{
+“dashboard”: {
+“title”: “CER Magliano in Toscana - Dashboard Principale”,
+“tags”: [“cer”, “energia”, “magliano”],
+“timezone”: “Europe/Rome”,
+“schemaVersion”: 36,
+“refresh”: “5m”,
+“panels”: [
+{
+“id”: 1,
+“title”: “Energia Condivisa in Tempo Reale”,
+“type”: “stat”,
+“gridPos”: { “x”: 0, “y”: 0, “w”: 6, “h”: 4 },
+“targets”: [
+{
+“datasource”: “PostgreSQL-CER”,
+“rawSql”: “SELECT energia_condivisa_kwh as value, timestamp as time FROM energia_condivisa_oraria ORDER BY timestamp DESC LIMIT 1”,
+“format”: “time_series”
+}
+],
+“fieldConfig”: {
+“defaults”: {
+“unit”: “kwatth”,
+“decimals”: 2,
+“thresholds”: {
+“mode”: “absolute”,
+“steps”: [
+{ “value”: 0, “color”: “red” },
+{ “value”: 5, “color”: “yellow” },
+{ “value”: 10, “color”: “green” }
+]
+}
+}
+},
+“options”: {
+“graphMode”: “area”,
+“colorMode”: “value”,
+“textMode”: “value_and_name”
+}
+},
+{
+“id”: 2,
+“title”: “Autoconsumo Istantaneo %”,
+“type”: “gauge”,
+“gridPos”: { “x”: 6, “y”: 0, “w”: 6, “h”: 4 },
+“targets”: [
+{
+“datasource”: “PostgreSQL-CER”,
+“rawSql”: “SELECT percentuale_autoconsumo as value, timestamp as time FROM energia_condivisa_oraria ORDER BY timestamp DESC LIMIT 1”
+}
+],
+“fieldConfig”: {
+“defaults”: {
+“unit”: “percent”,
+“min”: 0,
+“max”: 100,
+“thresholds”: {
+“mode”: “absolute”,
+“steps”: [
+{ “value”: 0, “color”: “red” },
+{ “value”: 40, “color”: “yellow” },
+{ “value”: 70, “color”: “green” }
+]
+}
+}
+},
+“options”: {
+“showThresholdLabels”: true,
+“showThresholdMarkers”: true
+}
+},
+{
+“id”: 3,
+“title”: “Incentivi Oggi”,
+“type”: “stat”,
+“gridPos”: { “x”: 12, “y”: 0, “w”: 6, “h”: 4 },
+“targets”: [
+{
+“datasource”: “PostgreSQL-CER”,
+“rawSql”: “SELECT SUM(valore_incentivo_euro) as value FROM energia_condivisa_oraria WHERE DATE(timestamp) = CURRENT_DATE”
+}
+],
+“fieldConfig”: {
+“defaults”: {
+“unit”: “currencyEUR”,
+“decimals”: 2,
+“color”: { “mode”: “thresholds” },
+“thresholds”: {
+“steps”: [
+{ “value”: 0, “color”: “blue” },
+{ “value”: 50, “color”: “green” },
+{ “value”: 100, “color”: “super-light-green” }
+]
+}
+}
+},
+“options”: {
+“graphMode”: “area”,
+“textMode”: “value_and_name”
+}
+},
+{
+“id”: 4,
+“title”: “Membri Attivi”,
+“type”: “stat”,
+“gridPos”: { “x”: 18, “y”: 0, “w”: 6, “h”: 4 },
+“targets”: [
+{
+“datasource”: “PostgreSQL-CER”,
+“rawSql”: “SELECT COUNT(*) as value FROM membri WHERE attivo = true”
+}
+],
+“fieldConfig”: {
+“defaults”: {
+“unit”: “short”,
+“color”: { “mode”: “fixed”, “fixedColor”: “text” }
+}
+},
+“options”: {
+“textMode”: “value_and_name”,
+“colorMode”: “background”
+}
+},
+{
+“id”: 5,
+“title”: “Produzione vs Consumo (Ultime 24h)”,
+“type”: “timeseries”,
+“gridPos”: { “x”: 0, “y”: 4, “w”: 12, “h”: 8 },
+“targets”: [
+{
+“datasource”: “PostgreSQL-CER”,
+“rawSql”: “SELECT timestamp as time, produzione_totale_kwh as "Produzione", consumo_totale_kwh as "Consumo", energia_condivisa_kwh as "Energia Condivisa" FROM energia_condivisa_oraria WHERE timestamp > NOW() - INTERVAL ‘24 hours’ ORDER BY timestamp”,
+“format”: “time_series”
+}
+],
+“fieldConfig”: {
+“defaults”: {
+“unit”: “kwatth”,
+“custom”: {
+“drawStyle”: “line”,
+“lineInterpolation”: “smooth”,
+“fillOpacity”: 10,
+“pointSize”: 5,
+“showPoints”: “never”
+}
+},
+“overrides”: [
+{
+“matcher”: { “id”: “byName”, “options”: “Produzione” },
+“properties”: [
+{ “id”: “color”, “value”: { “mode”: “fixed”, “fixedColor”: “green” } }
+]
+},
+{
+“matcher”: { “id”: “byName”, “options”: “Consumo” },
+“properties”: [
+{ “id”: “color”, “value”: { “mode”: “fixed”, “fixedColor”: “blue” } }
+]
+},
+{
+“matcher”: { “id”: “byName”, “options”: “Energia Condivisa” },
+“properties”: [
+{ “id”: “color”, “value”: { “mode”: “fixed”, “fixedColor”: “orange” } },
+{ “id”: “custom.fillOpacity”, “value”: 30 }
+]
+}
+]
+},
+“options”: {
+“tooltip”: { “mode”: “multi” },
+“legend”: { “displayMode”: “list”, “placement”: “bottom” }
+}
+},
+{
+“id”: 6,
+“title”: “Bilancio Energetico Orario”,
+“type”: “timeseries”,
+“gridPos”: { “x”: 12, “y”: 4, “w”: 12, “h”: 8 },
+“targets”: [
+{
+“datasource”: “PostgreSQL-CER”,
+“rawSql”: “SELECT timestamp as time, energia_immessa_rete_kwh as "Immessa in Rete", -energia_prelevata_rete_kwh as "Prelevata da Rete" FROM energia_condivisa_oraria WHERE timestamp > NOW() - INTERVAL ‘24 hours’ ORDER BY timestamp”
+}
+],
+“fieldConfig”: {
+“defaults”: {
+“unit”: “kwatth”,
+“custom”: {
+“drawStyle”: “bars”,
+“fillOpacity”: 80,
+“gradientMode”: “opacity”
+}
+},
+“overrides”: [
+{
+“matcher”: { “id”: “byName”, “options”: “Immessa in Rete” },
+“properties”: [
+{ “id”: “color”, “value”: { “mode”: “fixed”, “fixedColor”: “light-green” } }
+]
+},
+{
+“matcher”: { “id”: “byName”, “options”: “Prelevata da Rete” },
+“properties”: [
+{ “id”: “color”, “value”: { “mode”: “fixed”, “fixedColor”: “light-red” } }
+]
+}
+]
+},
+“options”: {
+“tooltip”: { “mode”: “multi” },
+“legend”: { “displayMode”: “list”, “placement”: “bottom” }
+}
+},
+{
+“id”: 7,
+“title”: “Produzione per Impianto (Oggi)”,
+“type”: “piechart”,
+“gridPos”: { “x”: 0, “y”: 12, “w”: 8, “h”: 8 },
+“targets”: [
+{
+“datasource”: “PostgreSQL-CER”,
+“rawSql”: “SELECT i.nome_impianto as metric, SUM(p.energia_prodotta_kwh) as value FROM produzione_oraria p JOIN impianti i ON p.impianto_id = i.id WHERE DATE(p.timestamp) = CURRENT_DATE GROUP BY i.nome_impianto ORDER BY value DESC”
+}
+],
+“fieldConfig”: {
+“defaults”: {
+“unit”: “kwatth”
+}
+},
+“options”: {
+“pieType”: “donut”,
+“displayLabels”: [“name”, “percent”],
+“legend”: { “displayMode”: “table”, “placement”: “right” }
+}
+},
+{
+“id”: 8,
+“title”: “Classifica Membri - Energia Condivisa (Mese Corrente)”,
+“type”: “table”,
+“gridPos”: { “x”: 8, “y”: 12, “w”: 16, “h”: 8 },
+“targets”: [
+{
+“datasource”: “PostgreSQL-CER”,
+“rawSql”: “SELECT m.nome as "Nome", m.tipo_membro as "Tipo", ROUND(SUM(r.energia_condivisa_membro_kwh)::numeric, 2) as "Energia Condivisa (kWh)", ROUND(SUM(r.incentivo_spettante_euro)::numeric, 2) as "Incentivi (€)", ROUND(AVG(r.percentuale_contributo)::numeric, 2) as "Contributo Medio (%)" FROM membri m LEFT JOIN ripartizione_oraria r ON m.id = r.membro_id WHERE EXTRACT(MONTH FROM r.timestamp) = EXTRACT(MONTH FROM CURRENT_DATE) AND EXTRACT(YEAR FROM r.timestamp) = EXTRACT(YEAR FROM CURRENT_DATE) AND m.attivo = true GROUP BY m.id, m.nome, m.tipo_membro ORDER BY SUM(r.energia_condivisa_membro_kwh) DESC LIMIT 10”
+}
+],
+“fieldConfig”: {
+“overrides”: [
+{
+“matcher”: { “id”: “byName”, “options”: “Energia Condivisa (kWh)” },
+“properties”: [
+{
+“id”: “custom.displayMode”,
+“value”: “gradient-gauge”
+},
+{
+“id”: “color”,
+“value”: {
+“mode”: “continuous-GrYlRd”
+}
+}
+]
+},
+{
+“matcher”: { “id”: “byName”, “options”: “Incentivi (€)” },
+“properties”: [
+{
+“id”: “custom.displayMode”,
+“value”: “color-background”
+},
+{
+“id”: “color”,
+“value”: {
+“mode”: “continuous-BlYlRd”
+}
+}
+]
+}
+]
+},
+“options”: {
+“showHeader”: true,
+“sortBy”: [
+{
+“displayName”: “Energia Condivisa (kWh)”,
+“desc”: true
+}
+]
+}
+},
+{
+“id”: 9,
+“title”: “Andamento Autoconsumo (Ultimi 7 Giorni)”,
+“type”: “timeseries”,
+“gridPos”: { “x”: 0, “y”: 20, “w”: 12, “h”: 6 },
+“targets”: [
+{
+“datasource”: “PostgreSQL-CER”,
+“rawSql”: “SELECT DATE(timestamp) as time, AVG(percentuale_autoconsumo) as "Autoconsumo Medio %" FROM energia_condivisa_oraria WHERE timestamp > NOW() - INTERVAL ‘7 days’ GROUP BY DATE(timestamp) ORDER BY DATE(timestamp)”
+}
+],
+“fieldConfig”: {
+“defaults”: {
+“unit”: “percent”,
+“custom”: {
+“drawStyle”: “line”,
+“lineInterpolation”: “smooth”,
+“fillOpacity”: 20,
+“lineWidth”: 2,
+“pointSize”: 5
+},
+“thresholds”: {
+“mode”: “absolute”,
+“steps”: [
+{ “value”: 0, “color”: “red” },
+{ “value”: 50, “color”: “yellow” },
+{ “value”: 70, “color”: “green” }
+]
+}
+}
+},
+“options”: {
+“tooltip”: { “mode”: “single” },
+“legend”: { “displayMode”: “list”, “placement”: “bottom” }
+}
+},
+{
+“id”: 10,
+“title”: “Incentivi Cumulati (Mensile)”,
+“type”: “barchart”,
+“gridPos”: { “x”: 12, “y”: 20, “w”: 12, “h”: 6 },
+“targets”: [
+{
+“datasource”: “PostgreSQL-CER”,
+“rawSql”: “SELECT TO_CHAR(DATE_TRUNC(‘month’, timestamp), ‘Mon YYYY’) as time, SUM(valore_incentivo_euro) as "Incentivi Totali €" FROM energia_condivisa_oraria WHERE timestamp > NOW() - INTERVAL ‘12 months’ GROUP BY DATE_TRUNC(‘month’, timestamp) ORDER BY DATE_TRUNC(‘month’, timestamp)”
+}
+],
+“fieldConfig”: {
+“defaults”: {
+“unit”: “currencyEUR”,
+“custom”: {
+“fillOpacity”: 80,
+“gradientMode”: “hue”
+},
+“color”: {
+“mode”: “continuous-GrYlRd”
+}
+}
+},
+“options”: {
+“orientation”: “horizontal”,
+“xTickLabelRotation”: -45,
+“showValue”: “always”
+}
+},
+{
+“id”: 11,
+“title”: “CO2 Risparmiata (Totale Anno)”,
+“type”: “stat”,
+“gridPos”: { “x”: 0, “y”: 26, “w”: 8, “h”: 4 },
+“targets”: [
+{
+“datasource”: “PostgreSQL-CER”,
+“rawSql”: “SELECT SUM(produzione_totale_kwh * 0.3) as value FROM energia_condivisa_oraria WHERE EXTRACT(YEAR FROM timestamp) = EXTRACT(YEAR FROM CURRENT_DATE)”
+}
+],
+“fieldConfig”: {
+“defaults”: {
+“unit”: “kg”,
+“decimals”: 0,
+“color”: { “mode”: “fixed”, “fixedColor”: “green” }
+}
+},
+“options”: {
+“graphMode”: “area”,
+“textMode”: “value_and_name”,
+“colorMode”: “background”
+}
+},
+{
+“id”: 12,
+“title”: “Risparmio Stimato Bollette (Anno)”,
+“type”: “stat”,
+“gridPos”: { “x”: 8, “y”: 26, “w”: 8, “h”: 4 },
+“targets”: [
+{
+“datasource”: “PostgreSQL-CER”,
+“rawSql”: “SELECT SUM(energia_condivisa_kwh * 0.15) as value FROM energia_condivisa_oraria WHERE EXTRACT(YEAR FROM timestamp) = EXTRACT(YEAR FROM CURRENT_DATE)”
+}
+],
+“fieldConfig”: {
+“defaults”: {
+“unit”: “currencyEUR”,
+“decimals”: 2,
+“color”: { “mode”: “fixed”, “fixedColor”: “blue” }
+}
+},
+“options”: {
+“graphMode”: “area”,
+“textMode”: “value_and_name”,
+“colorMode”: “background”
+}
+},
+{
+“id”: 13,
+“title”: “Energia Totale Condivisa (Anno)”,
+“type”: “stat”,
+“gridPos”: { “x”: 16, “y”: 26, “w”: 8, “h”: 4 },
+“targets”: [
+{
+“datasource”: “PostgreSQL-CER”,
+“rawSql”: “SELECT SUM(energia_condivisa_kwh) as value FROM energia_condivisa_oraria WHERE EXTRACT(YEAR FROM timestamp) = EXTRACT(YEAR FROM CURRENT_DATE)”
+}
+],
+“fieldConfig”: {
+“defaults”: {
+“unit”: “kwatth”,
+“decimals”: 0,
+“color”: { “mode”: “fixed”, “fixedColor”: “orange” }
+}
+},
+“options”: {
+“graphMode”: “area”,
+“textMode”: “value_and_name”,
+“colorMode”: “background”
+}
+},
+{
+“id”: 14,
+“title”: “Alert e Anomalie (Ultimi 7 Giorni)”,
+“type”: “table”,
+“gridPos”: { “x”: 0, “y”: 30, “w”: 24, “h”: 6 },
+“targets”: [
+{
+“datasource”: “PostgreSQL-CER”,
+“rawSql”: “SELECT timestamp as "Data/Ora", tipo_alert as "Tipo", priorita as "Priorità", titolo as "Titolo", CASE WHEN risolto THEN ‘✅ Risolto’ ELSE ‘⚠️ Aperto’ END as "Stato" FROM alert WHERE timestamp > NOW() - INTERVAL ‘7 days’ ORDER BY timestamp DESC, priorita DESC LIMIT 20”
+}
+],
+“fieldConfig”: {
+“overrides”: [
+{
+“matcher”: { “id”: “byName”, “options”: “Priorità” },
+“properties”: [
+{
+“id”: “custom.displayMode”,
+“value”: “color-background”
+},
+{
+“id”: “mappings”,
+“value”: [
+{ “type”: “value”, “value”: “critica”, “text”: “🔴 Critica” },
+{ “type”: “value”, “value”: “alta”, “text”: “🟠 Alta” },
+{ “type”: “value”, “value”: “media”, “text”: “🟡 Media” },
+{ “type”: “value”, “value”: “bassa”, “text”: “🟢 Bassa” }
+]
+}
+]
+}
+]
+}
+},
+{
+“id”: 15,
+“title”: “Produzione Impianti Comunali (Real-time)”,
+“type”: “timeseries”,
+“gridPos”: { “x”: 0, “y”: 36, “w”: 24, “h”: 8 },
+“targets”: [
+{
+“datasource”: “PostgreSQL-CER”,
+“rawSql”: “SELECT p.timestamp as time, i.nome_impianto as metric, p.energia_prodotta_kwh as value FROM produzione_oraria p JOIN impianti i ON p.impianto_id = i.id JOIN edifici_comunali ec ON i.id = ec.impianto_id WHERE p.timestamp > NOW() - INTERVAL ‘24 hours’ ORDER BY p.timestamp”
+}
+],
+“fieldConfig”: {
+“defaults”: {
+“unit”: “kwatth”,
+“custom”: {
+“drawStyle”: “line”,
+“lineInterpolation”: “smooth”,
+“fillOpacity”: 10,
+“stacking”: { “mode”: “normal” }
+}
+}
+},
+“options”: {
+“tooltip”: { “mode”: “multi”, “sort”: “desc” },
+“legend”: { “displayMode”: “table”, “placement”: “bottom”, “calcs”: [“sum”, “mean”, “max”] }
+}
+}
+],
+“templating”: {
+“list”: [
+{
+“name”: “time_range”,
+“type”: “interval”,
+“query”: “1h,6h,12h,24h,7d,30d”,
+“current”: {
+“text”: “24h”,
+“value”: “24h”
+}
+},
+{
+“name”: “membro”,
+“type”: “query”,
+“datasource”: “PostgreSQL-CER”,
+“query”: “SELECT nome FROM membri WHERE attivo = true ORDER BY nome”,
+“multi”: true,
+“includeAll”: true
+}
+]
+},
+“time”: {
+“from”: “now-24h”,
+“to”: “now”
+},
+“timepicker”: {
+“refresh_intervals”: [“5s”, “10s”, “30s”, “1m”, “5m”, “15m”, “30m”, “1h”]
+}
+}
+}
