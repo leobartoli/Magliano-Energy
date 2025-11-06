@@ -1,0 +1,373 @@
+{
+“name”: “CER Magliano - Generazione Report Mensili”,
+“nodes”: [
+{
+“parameters”: {
+“rule”: {
+“interval”: [
+{
+“field”: “dayOfMonth”,
+“dayOfMonth”: 1
+},
+{
+“field”: “hour”,
+“hour”: 6
+}
+]
+}
+},
+“name”: “Trigger Primo del Mese”,
+“type”: “n8n-nodes-base.scheduleTrigger”,
+“position”: [250, 300],
+“id”: “trigger-mensile”
+},
+{
+“parameters”: {
+“jsCode”: “const now = new Date();\nconst primoGiornoMeseScorso = new Date(now.getFullYear(), now.getMonth() - 1, 1);\nconst ultimoGiornoMeseScorso = new Date(now.getFullYear(), now.getMonth(), 0);\n\nreturn [{\n  json: {\n    anno: primoGiornoMeseScorso.getFullYear(),\n    mese: primoGiornoMeseScorso.getMonth() + 1,\n    data_inizio: primoGiornoMeseScorso.toISOString(),\n    data_fine: ultimoGiornoMeseScorso.toISOString(),\n    nome_mese: primoGiornoMeseScorso.toLocaleDateString(‘it-IT’, { month: ‘long’ }),\n    periodo: `${primoGiornoMeseScorso.toLocaleDateString('it-IT')} - ${ultimoGiornoMeseScorso.toLocaleDateString('it-IT')}`\n  }\n}];”
+},
+“name”: “Calcola Periodo Mese Scorso”,
+“type”: “n8n-nodes-base.code”,
+“position”: [450, 300],
+“id”: “calc-periodo”
+},
+{
+“parameters”: {
+“operation”: “executeQuery”,
+“query”: “SELECT \n  m.id as membro_id,\n  m.codice_membro,\n  m.nome,\n  m.cognome,\n  m.tipo_membro,\n  m.email,\n  COALESCE(SUM(p.energia_prodotta_kwh), 0) as energia_prodotta_kwh,\n  COALESCE(SUM(c.energia_consumata_kwh), 0) as energia_consumata_kwh,\n  COALESCE(SUM(r.energia_condivisa_membro_kwh), 0) as energia_condivisa_kwh,\n  COALESCE(SUM(r.incentivo_spettante_euro), 0) as incentivo_totale_euro,\n  COUNT(DISTINCT DATE(r.timestamp)) as giorni_attivi\nFROM membri m\nLEFT JOIN impianti i ON m.id = i.membro_id AND i.attivo = true\nLEFT JOIN produzione_oraria p ON i.id = p.impianto_id \n  AND p.timestamp >= ‘{{ $json.data_inizio }}’ \n  AND p.timestamp < ‘{{ $json.data_fine }}’\nLEFT JOIN consumo_orario c ON m.id = c.membro_id \n  AND c.timestamp >= ‘{{ $json.data_inizio }}’ \n  AND c.timestamp < ‘{{ $json.data_fine }}’\nLEFT JOIN ripartizione_oraria r ON m.id = r.membro_id \n  AND r.timestamp >= ‘{{ $json.data_inizio }}’ \n  AND r.timestamp < ‘{{ $json.data_fine }}’\nWHERE m.attivo = true\nGROUP BY m.id, m.codice_membro, m.nome, m.cognome, m.tipo_membro, m.email\nORDER BY energia_condivisa_kwh DESC”
+},
+“name”: “Calcola Dati Mensili per Membro”,
+“type”: “n8n-nodes-base.postgres”,
+“position”: [650, 300],
+“credentials”: {
+“postgres”: {
+“id”: “1”,
+“name”: “PostgreSQL CER”
+}
+},
+“id”: “calc-dati-mensili”
+},
+{
+“parameters”: {
+“jsCode”: “const items = $input.all();\nconst periodo = items[0].json;\n\nconst membri = items.slice(1).map(item => {\n  const data = item.json;\n  const autoconsumo = data.energia_consumata_kwh > 0 \n    ? ((data.energia_condivisa_kwh / data.energia_consumata_kwh) * 100).toFixed(2)\n    : 0;\n  \n  // Stima risparmio bolletta (energia condivisa a prezzo PUN medio ~0.15 €/kWh)\n  const risparmio_bolletta = (data.energia_condivisa_kwh * 0.15).toFixed(2);\n  \n  // CO2 risparmiata (0.3 kg CO2 per kWh)\n  const co2_risparmiata = (data.energia_prodotta_kwh * 0.3).toFixed(2);\n  \n  return {\n    …data,\n    percentuale_autoconsumo: autoconsumo,\n    risparmio_bolletta_stimato_euro: risparmio_bolletta,\n    co2_risparmiata_kg: co2_risparmiata,\n    anno: periodo.anno,\n    mese: periodo.mese,\n    periodo: periodo.periodo,\n    nome_mese: periodo.nome_mese\n  };\n});\n\nreturn membri.map(m => ({ json: m }));”
+},
+“name”: “Calcola Metriche Aggiuntive”,
+“type”: “n8n-nodes-base.code”,
+“position”: [850, 300],
+“id”: “calc-metriche”
+},
+{
+“parameters”: {
+“operation”: “executeQuery”,
+“query”: “INSERT INTO report_mensili (\n  anno,\n  mese,\n  membro_id,\n  energia_prodotta_kwh,\n  energia_consumata_kwh,\n  energia_condivisa_kwh,\n  percentuale_autoconsumo,\n  incentivo_totale_euro,\n  risparmio_bolletta_stimato_euro,\n  co2_risparmiata_kg,\n  stato_pagamento\n) VALUES (\n  {{ $json.anno }},\n  {{ $json.mese }},\n  ‘{{ $json.membro_id }}’,\n  {{ $json.energia_prodotta_kwh }},\n  {{ $json.energia_consumata_kwh }},\n  {{ $json.energia_condivisa_kwh }},\n  {{ $json.percentuale_autoconsumo }},\n  {{ $json.incentivo_totale_euro }},\n  {{ $json.risparmio_bolletta_stimato_euro }},\n  {{ $json.co2_risparmiata_kg }},\n  ‘da_pagare’\n) ON CONFLICT (anno, mese, membro_id) DO UPDATE SET\n  energia_prodotta_kwh = EXCLUDED.energia_prodotta_kwh,\n  energia_consumata_kwh = EXCLUDED.energia_consumata_kwh,\n  energia_condivisa_kwh = EXCLUDED.energia_condivisa_kwh,\n  percentuale_autoconsumo = EXCLUDED.percentuale_autoconsumo,\n  incentivo_totale_euro = EXCLUDED.incentivo_totale_euro,\n  risparmio_bolletta_stimato_euro = EXCLUDED.risparmio_bolletta_stimato_euro,\n  co2_risparmiata_kg = EXCLUDED.co2_risparmiata_kg”
+},
+“name”: “Salva Report su DB”,
+“type”: “n8n-nodes-base.postgres”,
+“position”: [1050, 300],
+“credentials”: {
+“postgres”: {
+“id”: “1”,
+“name”: “PostgreSQL CER”
+}
+},
+“id”: “save-report”
+},
+{
+“parameters”: {
+“operation”: “create”,
+“documentId”: “{{ $json.spreadsheet_id }}”,
+“sheetName”: “Report {{ $json.nome_mese }} {{ $json.anno }}”,
+“options”: {
+“insertDataOption”: “INSERT_ROWS”
+},
+“columns”: {
+“mappings”: [
+{
+“column”: “Codice Membro”,
+“value”: “={{ $json.codice_membro }}”
+},
+{
+“column”: “Nome”,
+“value”: “={{ $json.nome }}”
+},
+{
+“column”: “Tipo”,
+“value”: “={{ $json.tipo_membro }}”
+},
+{
+“column”: “Produzione kWh”,
+“value”: “={{ $json.energia_prodotta_kwh }}”
+},
+{
+“column”: “Consumo kWh”,
+“value”: “={{ $json.energia_consumata_kwh }}”
+},
+{
+“column”: “Energia Condivisa kWh”,
+“value”: “={{ $json.energia_condivisa_kwh }}”
+},
+{
+“column”: “Autoconsumo %”,
+“value”: “={{ $json.percentuale_autoconsumo }}”
+},
+{
+“column”: “Incentivi €”,
+“value”: “={{ $json.incentivo_totale_euro }}”
+},
+{
+“column”: “Risparmio Stimato €”,
+“value”: “={{ $json.risparmio_bolletta_stimato_euro }}”
+},
+{
+“column”: “CO2 Risparmiata kg”,
+“value”: “={{ $json.co2_risparmiata_kg }}”
+}
+]
+}
+},
+“name”: “Aggiorna Google Sheet”,
+“type”: “n8n-nodes-base.googleSheets”,
+“position”: [1250, 300],
+“credentials”: {
+“googleSheetsOAuth2Api”: {
+“id”: “5”,
+“name”: “Google Sheets CER”
+}
+},
+“id”: “update-sheet”
+},
+{
+“parameters”: {
+“operation”: “generateDocument”,
+“templateId”: “{{ $json.template_pdf_id }}”,
+“options”: {
+“mappings”: [
+{
+“field”: “nome_membro”,
+“value”: “={{ $json.nome }} {{ $json.cognome }}”
+},
+{
+“field”: “periodo”,
+“value”: “={{ $json.periodo }}”
+},
+{
+“field”: “energia_prodotta”,
+“value”: “={{ $json.energia_prodotta_kwh }}”
+},
+{
+“field”: “energia_consumata”,
+“value”: “={{ $json.energia_consumata_kwh }}”
+},
+{
+“field”: “energia_condivisa”,
+“value”: “={{ $json.energia_condivisa_kwh }}”
+},
+{
+“field”: “incentivo_totale”,
+“value”: “={{ $json.incentivo_totale_euro }}”
+},
+{
+“field”: “risparmio_stimato”,
+“value”: “={{ $json.risparmio_bolletta_stimato_euro }}”
+},
+{
+“field”: “co2_risparmiata”,
+“value”: “={{ $json.co2_risparmiata_kg }}”
+}
+]
+}
+},
+“name”: “Genera PDF Report”,
+“type”: “n8n-nodes-base.googleDocs”,
+“position”: [1450, 300],
+“credentials”: {
+“googleDocsOAuth2Api”: {
+“id”: “6”,
+“name”: “Google Docs CER”
+}
+},
+“id”: “gen-pdf”
+},
+{
+“parameters”: {
+“fromEmail”: “energia@comune.magliano.gr.it”,
+“toEmail”: “={{ $json.email }}”,
+“subject”: “Report Mensile CER Magliano - {{ $json.nome_mese }} {{ $json.anno }}”,
+“emailType”: “html”,
+“message”: “<!DOCTYPE html>\n<html>\n<head>\n<style>\n  body { font-family: Arial, sans-serif; }\n  .header { background-color: #4CAF50; color: white; padding: 20px; text-align: center; }\n  .content { padding: 20px; }\n  .metric { background-color: #f1f1f1; padding: 15px; margin: 10px 0; border-radius: 5px; }\n  .metric-value { font-size: 24px; font-weight: bold; color: #4CAF50; }\n  .footer { background-color: #333; color: white; padding: 10px; text-align: center; font-size: 12px; }\n</style>\n</head>\n<body>\n  <div class='header'>\n    <h1>Comunità Energetica Rinnovabile</h1>\n    <h2>Comune di Magliano in Toscana</h2>\n  </div>\n  \n  <div class='content'>\n    <h2>Gentile {{ $json.nome }} {{ $json.cognome }},</h2>\n    <p>Ecco il riepilogo della tua partecipazione alla CER per il mese di <strong>{{ $json.nome_mese }} {{ $json.anno }}</strong>.</p>\n    \n    <div class='metric'>\n      <strong>⚡ Energia Prodotta</strong><br>\n      <span class='metric-value'>{{ $json.energia_prodotta_kwh }} kWh</span>\n    </div>\n    \n    <div class='metric'>\n      <strong>🔌 Energia Consumata</strong><br>\n      <span class='metric-value'>{{ $json.energia_consumata_kwh }} kWh</span>\n    </div>\n    \n    <div class='metric'>\n      <strong>🔄 Energia Condivisa nella CER</strong><br>\n      <span class='metric-value'>{{ $json.energia_condivisa_kwh }} kWh</span>\n    </div>\n    \n    <div class='metric'>\n      <strong>💰 Incentivi Maturati</strong><br>\n      <span class='metric-value'>€ {{ $json.incentivo_totale_euro }}</span>\n    </div>\n    \n    <div class='metric'>\n      <strong>💵 Risparmio Stimato in Bolletta</strong><br>\n      <span class='metric-value'>€ {{ $json.risparmio_bolletta_stimato_euro }}</span>\n    </div>\n    \n    <div class='metric'>\n      <strong>🌱 CO2 Risparmiata</strong><br>\n      <span class='metric-value'>{{ $json.co2_risparmiata_kg }} kg</span>\n    </div>\n    \n    <p>In allegato trovi il report dettagliato in formato PDF.</p>\n    <p>Per qualsiasi domanda, contatta l’ufficio energia del Comune.</p>\n  </div>\n  \n  <div class='footer'>\n    <p>Comune di Magliano in Toscana - Comunità Energetica Rinnovabile</p>\n    <p>Email: energia@comune.magliano.gr.it | Tel: 0564 123456</p>\n  </div>\n</body>\n</html>”,
+“options”: {
+“attachments”: “pdf_path={{ $json.pdf_path }}”
+}
+},
+“name”: “Invia Email Report”,
+“type”: “n8n-nodes-base.emailSend”,
+“position”: [1650, 300],
+“credentials”: {
+“smtp”: {
+“id”: “7”,
+“name”: “SMTP Comune”
+}
+},
+“id”: “send-email”
+},
+{
+“parameters”: {
+“operation”: “executeQuery”,
+“query”: “SELECT \n  SUM(energia_prodotta_kwh) as totale_produzione,\n  SUM(energia_consumata_kwh) as totale_consumo,\n  SUM(energia_condivisa_kwh) as totale_condivisa,\n  SUM(incentivo_totale_euro) as totale_incentivi,\n  SUM(risparmio_bolletta_stimato_euro) as totale_risparmi,\n  SUM(co2_risparmiata_kg) as totale_co2,\n  AVG(percentuale_autoconsumo) as autoconsumo_medio,\n  COUNT(*) as numero_membri\nFROM report_mensili\nWHERE anno = {{ $json.anno }} AND mese = {{ $json.mese }}”
+},
+“name”: “Calcola Totali CER”,
+“type”: “n8n-nodes-base.postgres”,
+“position”: [1050, 500],
+“credentials”: {
+“postgres”: {
+“id”: “1”,
+“name”: “PostgreSQL CER”
+}
+},
+“id”: “calc-totali”
+},
+{
+“parameters”: {
+“chatId”: “{{ $json.telegram_gruppo_cer }}”,
+“text”: “📊 *Report Mensile CER Magliano - {{ $json.nome_mese }} {{ $json.anno }}*\n\n✅ Report generati per {{ $json.numero_membri }} membri\n\n*Totali Comunità:*\n🔆 Produzione: {{ $json.totale_produzione }} kWh\n⚡ Consumo: {{ $json.totale_consumo }} kWh\n🔄 Energia Condivisa: {{ $json.totale_condivisa }} kWh\n📊 Autoconsumo Medio: {{ $json.autoconsumo_medio }}%\n\n*Benefici Economici:*\n💰 Incentivi Totali: €{{ $json.totale_incentivi }}\n💵 Risparmi Stimati: €{{ $json.totale_risparmi }}\n\n*Impatto Ambientale:*\n🌱 CO2 Risparmiata: {{ $json.totale_co2 }} kg\n\nTutti i membri hanno ricevuto il proprio report via email.”,
+“additionalFields”: {
+“parse_mode”: “Markdown”
+}
+},
+“name”: “Notifica Report Completato”,
+“type”: “n8n-nodes-base.telegram”,
+“position”: [1250, 500],
+“credentials”: {
+“telegramApi”: {
+“id”: “3”,
+“name”: “Telegram Bot CER”
+}
+},
+“id”: “notify-completato”
+},
+{
+“parameters”: {
+“operation”: “executeQuery”,
+“query”: “INSERT INTO log_eventi (tipo_evento, descrizione, dati_json, severita) VALUES (\n  ‘report_mensile_generato’,\n  ‘Generati report mensili per {{ $json.numero_membri }} membri’,\n  ‘{"anno": {{ $json.anno }}, "mese": {{ $json.mese }}, "totale_incentivi": {{ $json.totale_incentivi }}}’,\n  ‘info’\n)”
+},
+“name”: “Log Evento”,
+“type”: “n8n-nodes-base.postgres”,
+“position”: [1450, 500],
+“credentials”: {
+“postgres”: {
+“id”: “1”,
+“name”: “PostgreSQL CER”
+}
+},
+“id”: “log-evento”
+}
+],
+“connections”: {
+“Trigger Primo del Mese”: {
+“main”: [
+[
+{
+“node”: “Calcola Periodo Mese Scorso”,
+“type”: “main”,
+“index”: 0
+}
+]
+]
+},
+“Calcola Periodo Mese Scorso”: {
+“main”: [
+[
+{
+“node”: “Calcola Dati Mensili per Membro”,
+“type”: “main”,
+“index”: 0
+}
+]
+]
+},
+“Calcola Dati Mensili per Membro”: {
+“main”: [
+[
+{
+“node”: “Calcola Metriche Aggiuntive”,
+“type”: “main”,
+“index”: 0
+}
+]
+]
+},
+“Calcola Metriche Aggiuntive”: {
+“main”: [
+[
+{
+“node”: “Salva Report su DB”,
+“type”: “main”,
+“index”: 0
+}
+]
+]
+},
+“Salva Report su DB”: {
+“main”: [
+[
+{
+“node”: “Aggiorna Google Sheet”,
+“type”: “main”,
+“index”: 0
+},
+{
+“node”: “Calcola Totali CER”,
+“type”: “main”,
+“index”: 0
+}
+]
+]
+},
+“Aggiorna Google Sheet”: {
+“main”: [
+[
+{
+“node”: “Genera PDF Report”,
+“type”: “main”,
+“index”: 0
+}
+]
+]
+},
+“Genera PDF Report”: {
+“main”: [
+[
+{
+“node”: “Invia Email Report”,
+“type”: “main”,
+“index”: 0
+}
+]
+]
+},
+“Calcola Totali CER”: {
+“main”: [
+[
+{
+“node”: “Notifica Report Completato”,
+“type”: “main”,
+“index”: 0
+}
+]
+]
+},
+“Notifica Report Completato”: {
+“main”: [
+[
+{
+“node”: “Log Evento”,
+“type”: “main”,
+“index”: 0
+}
+]
+]
+}
+},
+“settings”: {
+“executionOrder”: “v1”
+}
+}
