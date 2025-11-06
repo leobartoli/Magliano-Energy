@@ -1,0 +1,387 @@
+{
+“name”: “CER Magliano - Workflow Principale”,
+“nodes”: [
+{
+“parameters”: {
+“rule”: {
+“interval”: [
+{
+“field”: “minutes”,
+“minutesInterval”: 60
+}
+]
+}
+},
+“name”: “Trigger Orario”,
+“type”: “n8n-nodes-base.scheduleTrigger”,
+“position”: [250, 300],
+“id”: “trigger-orario”
+},
+{
+“parameters”: {
+“httpMethod”: “POST”,
+“path”: “dati-orari”,
+“options”: {}
+},
+“name”: “Webhook Dati Home Assistant”,
+“type”: “n8n-nodes-base.webhook”,
+“position”: [250, 500],
+“webhookId”: “cer-magliano-dati”,
+“id”: “webhook-ha”
+},
+{
+“parameters”: {
+“authentication”: “predefinedCredentialType”,
+“nodeCredentialType”: “postgres”,
+“operation”: “executeQuery”,
+“query”: “SELECT m.id, m.codice_membro, m.nome, m.pod FROM membri m WHERE m.attivo = true”
+},
+“name”: “Carica Membri Attivi”,
+“type”: “n8n-nodes-base.postgres”,
+“position”: [450, 300],
+“credentials”: {
+“postgres”: {
+“id”: “1”,
+“name”: “PostgreSQL CER”
+}
+},
+“id”: “load-membri”
+},
+{
+“parameters”: {
+“url”: “={{ $json.ha_endpoint }}/api/states/sensor.produzione_oraria”,
+“authentication”: “predefinedCredentialType”,
+“nodeCredentialType”: “httpHeaderAuth”,
+“options”: {}
+},
+“name”: “Richiedi Dati HA - Produzione”,
+“type”: “n8n-nodes-base.httpRequest”,
+“position”: [650, 200],
+“credentials”: {
+“httpHeaderAuth”: {
+“id”: “2”,
+“name”: “Home Assistant Auth”
+}
+},
+“id”: “fetch-produzione”
+},
+{
+“parameters”: {
+“url”: “={{ $json.ha_endpoint }}/api/states/sensor.consumo_orario”,
+“authentication”: “predefinedCredentialType”,
+“nodeCredentialType”: “httpHeaderAuth”
+},
+“name”: “Richiedi Dati HA - Consumo”,
+“type”: “n8n-nodes-base.httpRequest”,
+“position”: [650, 400],
+“credentials”: {
+“httpHeaderAuth”: {
+“id”: “2”,
+“name”: “Home Assistant Auth”
+}
+},
+“id”: “fetch-consumo”
+},
+{
+“parameters”: {
+“jsCode”: “const items = $input.all();\nconst timestamp = new Date();\ntimestamp.setMinutes(0, 0, 0);\n\nlet produzioneTotale = 0;\nlet consumoTotale = 0;\n\nfor (const item of items) {\n  if (item.json.tipo === ‘produzione’) {\n    produzioneTotale += parseFloat(item.json.valore) || 0;\n  } else if (item.json.tipo === ‘consumo’) {\n    consumoTotale += parseFloat(item.json.valore) || 0;\n  }\n}\n\nconst energiaCondivisa = Math.min(produzioneTotale, consumoTotale);\nconst energiaImmessa = Math.max(0, produzioneTotale - consumoTotale);\nconst energiaPrelevata = Math.max(0, consumoTotale - produzioneTotale);\nconst percentualeAutoconsumo = consumoTotale > 0 \n  ? (energiaCondivisa / consumoTotale * 100).toFixed(2) \n  : 0;\n\n// Tariffa incentivo CER (dal TIAD + premio autoconsumo)\nconst tariffaIncentivo = 0.119; // €/kWh\nconst valoreIncentivo = (energiaCondivisa * tariffaIncentivo).toFixed(2);\n\nreturn [{\n  json: {\n    timestamp: timestamp.toISOString(),\n    produzione_totale_kwh: produzioneTotale.toFixed(3),\n    consumo_totale_kwh: consumoTotale.toFixed(3),\n    energia_condivisa_kwh: energiaCondivisa.toFixed(3),\n    energia_immessa_rete_kwh: energiaImmessa.toFixed(3),\n    energia_prelevata_rete_kwh: energiaPrelevata.toFixed(3),\n    percentuale_autoconsumo: percentualeAutoconsumo,\n    tariffa_incentivo_euro_kwh: tariffaIncentivo,\n    valore_incentivo_euro: valoreIncentivo,\n    numero_membri_attivi: items.filter(i => i.json.membro_id).length\n  }\n}];”
+},
+“name”: “Calcola Energia Condivisa”,
+“type”: “n8n-nodes-base.code”,
+“position”: [850, 300],
+“id”: “calc-energia”
+},
+{
+“parameters”: {
+“operation”: “executeQuery”,
+“query”: “INSERT INTO energia_condivisa_oraria (\n  timestamp, \n  produzione_totale_kwh, \n  consumo_totale_kwh,\n  energia_condivisa_kwh,\n  energia_immessa_rete_kwh,\n  energia_prelevata_rete_kwh,\n  percentuale_autoconsumo,\n  tariffa_incentivo_euro_kwh,\n  valore_incentivo_euro,\n  numero_membri_attivi\n) VALUES (\n  ‘{{ $json.timestamp }}’,\n  {{ $json.produzione_totale_kwh }},\n  {{ $json.consumo_totale_kwh }},\n  {{ $json.energia_condivisa_kwh }},\n  {{ $json.energia_immessa_rete_kwh }},\n  {{ $json.energia_prelevata_rete_kwh }},\n  {{ $json.percentuale_autoconsumo }},\n  {{ $json.tariffa_incentivo_euro_kwh }},\n  {{ $json.valore_incentivo_euro }},\n  {{ $json.numero_membri_attivi }}\n) ON CONFLICT (timestamp) DO UPDATE SET\n  produzione_totale_kwh = EXCLUDED.produzione_totale_kwh,\n  consumo_totale_kwh = EXCLUDED.consumo_totale_kwh,\n  energia_condivisa_kwh = EXCLUDED.energia_condivisa_kwh,\n  energia_immessa_rete_kwh = EXCLUDED.energia_immessa_rete_kwh,\n  energia_prelevata_rete_kwh = EXCLUDED.energia_prelevata_rete_kwh,\n  percentuale_autoconsumo = EXCLUDED.percentuale_autoconsumo,\n  valore_incentivo_euro = EXCLUDED.valore_incentivo_euro”
+},
+“name”: “Salva Energia Condivisa DB”,
+“type”: “n8n-nodes-base.postgres”,
+“position”: [1050, 300],
+“credentials”: {
+“postgres”: {
+“id”: “1”,
+“name”: “PostgreSQL CER”
+}
+},
+“id”: “save-energia-db”
+},
+{
+“parameters”: {
+“operation”: “executeQuery”,
+“query”: “SELECT calcola_energia_condivisa(’{{ $json.timestamp }}’)”
+},
+“name”: “Trigger Calcolo Ripartizione”,
+“type”: “n8n-nodes-base.postgres”,
+“position”: [1250, 300],
+“credentials”: {
+“postgres”: {
+“id”: “1”,
+“name”: “PostgreSQL CER”
+}
+},
+“id”: “calc-ripartizione”
+},
+{
+“parameters”: {
+“operation”: “executeQuery”,
+“query”: “SELECT ripartisci_incentivi_orari(’{{ $json.timestamp }}’)”
+},
+“name”: “Ripartisci Incentivi”,
+“type”: “n8n-nodes-base.postgres”,
+“position”: [1450, 300],
+“credentials”: {
+“postgres”: {
+“id”: “1”,
+“name”: “PostgreSQL CER”
+}
+},
+“id”: “ripartisci-incentivi”
+},
+{
+“parameters”: {
+“chatId”: “{{ $json.telegram_chat_id }}”,
+“text”: “✅ *Aggiornamento Orario CER Magliano*\n\n🔆 Produzione: {{ $json.produzione_totale_kwh }} kWh\n⚡ Consumo: {{ $json.consumo_totale_kwh }} kWh\n🔄 Energia Condivisa: {{ $json.energia_condivisa_kwh }} kWh\n📊 Autoconsumo: {{ $json.percentuale_autoconsumo }}%\n💰 Incentivi orari: €{{ $json.valore_incentivo_euro }}\n👥 Membri attivi: {{ $json.numero_membri_attivi }}”,
+“additionalFields”: {
+“parse_mode”: “Markdown”
+}
+},
+“name”: “Notifica Telegram”,
+“type”: “n8n-nodes-base.telegram”,
+“position”: [1650, 300],
+“credentials”: {
+“telegramApi”: {
+“id”: “3”,
+“name”: “Telegram Bot CER”
+}
+},
+“id”: “notify-telegram”
+},
+{
+“parameters”: {
+“url”: “https://api.influxdb.com/write”,
+“method”: “POST”,
+“authentication”: “predefinedCredentialType”,
+“nodeCredentialType”: “httpHeaderAuth”,
+“sendBody”: true,
+“bodyParameters”: {
+“parameters”: [
+{
+“name”: “db”,
+“value”: “cer_magliano”
+}
+]
+},
+“options”: {
+“bodyContentType”: “raw”,
+“rawBody”: “energia_condivisa,location=magliano produzione={{ $json.produzione_totale_kwh }},consumo={{ $json.consumo_totale_kwh }},condivisa={{ $json.energia_condivisa_kwh }},autoconsumo={{ $json.percentuale_autoconsumo }} {{ new Date($json.timestamp).getTime() * 1000000 }}”
+}
+},
+“name”: “Invia a InfluxDB”,
+“type”: “n8n-nodes-base.httpRequest”,
+“position”: [1650, 450],
+“credentials”: {
+“httpHeaderAuth”: {
+“id”: “4”,
+“name”: “InfluxDB Auth”
+}
+},
+“id”: “send-influx”
+},
+{
+“parameters”: {
+“conditions”: {
+“number”: [
+{
+“value1”: “={{ $json.energia_condivisa_kwh }}”,
+“operation”: “larger”,
+“value2”: 0
+}
+]
+}
+},
+“name”: “IF Energia Condivisa > 0”,
+“type”: “n8n-nodes-base.if”,
+“position”: [1250, 450],
+“id”: “if-energia”
+},
+{
+“parameters”: {
+“conditions”: {
+“number”: [
+{
+“value1”: “={{ $json.percentuale_autoconsumo }}”,
+“operation”: “smaller”,
+“value2”: 50
+}
+]
+}
+},
+“name”: “IF Autoconsumo Basso”,
+“type”: “n8n-nodes-base.if”,
+“position”: [1050, 500],
+“id”: “if-autoconsumo-basso”
+},
+{
+“parameters”: {
+“chatId”: “{{ $json.telegram_admin_id }}”,
+“text”: “⚠️ *Alert Autoconsumo Basso*\n\nAutoconsumo: {{ $json.percentuale_autoconsumo }}%\nRaccomandazione: valutare installazione batterie o ottimizzazione carichi differibili”,
+“additionalFields”: {
+“parse_mode”: “Markdown”
+}
+},
+“name”: “Alert Autoconsumo”,
+“type”: “n8n-nodes-base.telegram”,
+“position”: [1250, 600],
+“credentials”: {
+“telegramApi”: {
+“id”: “3”,
+“name”: “Telegram Bot CER”
+}
+},
+“id”: “alert-autoconsumo”
+}
+],
+“connections”: {
+“Trigger Orario”: {
+“main”: [
+[
+{
+“node”: “Carica Membri Attivi”,
+“type”: “main”,
+“index”: 0
+}
+]
+]
+},
+“Carica Membri Attivi”: {
+“main”: [
+[
+{
+“node”: “Richiedi Dati HA - Produzione”,
+“type”: “main”,
+“index”: 0
+},
+{
+“node”: “Richiedi Dati HA - Consumo”,
+“type”: “main”,
+“index”: 0
+}
+]
+]
+},
+“Richiedi Dati HA - Produzione”: {
+“main”: [
+[
+{
+“node”: “Calcola Energia Condivisa”,
+“type”: “main”,
+“index”: 0
+}
+]
+]
+},
+“Richiedi Dati HA - Consumo”: {
+“main”: [
+[
+{
+“node”: “Calcola Energia Condivisa”,
+“type”: “main”,
+“index”: 0
+}
+]
+]
+},
+“Calcola Energia Condivisa”: {
+“main”: [
+[
+{
+“node”: “Salva Energia Condivisa DB”,
+“type”: “main”,
+“index”: 0
+},
+{
+“node”: “IF Autoconsumo Basso”,
+“type”: “main”,
+“index”: 0
+}
+]
+]
+},
+“Salva Energia Condivisa DB”: {
+“main”: [
+[
+{
+“node”: “Trigger Calcolo Ripartizione”,
+“type”: “main”,
+“index”: 0
+}
+]
+]
+},
+“Trigger Calcolo Ripartizione”: {
+“main”: [
+[
+{
+“node”: “Ripartisci Incentivi”,
+“type”: “main”,
+“index”: 0
+},
+{
+“node”: “IF Energia Condivisa > 0”,
+“type”: “main”,
+“index”: 0
+}
+]
+]
+},
+“Ripartisci Incentivi”: {
+“main”: [
+[
+{
+“node”: “Notifica Telegram”,
+“type”: “main”,
+“index”: 0
+}
+]
+]
+},
+“IF Energia Condivisa > 0”: {
+“main”: [
+[
+{
+“node”: “Invia a InfluxDB”,
+“type”: “main”,
+“index”: 0
+}
+]
+]
+},
+“IF Autoconsumo Basso”: {
+“main”: [
+[
+{
+“node”: “Alert Autoconsumo”,
+“type”: “main”,
+“index”: 0
+}
+]
+]
+},
+“Webhook Dati Home Assistant”: {
+“main”: [
+[
+{
+“node”: “Calcola Energia Condivisa”,
+“type”: “main”,
+“index”: 0
+}
+]
+]
+}
+},
+“settings”: {
+“executionOrder”: “v1”
+}
+}
