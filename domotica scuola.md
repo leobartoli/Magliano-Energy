@@ -1,49 +1,59 @@
-⚡ Smart Energy & Climate Control – n8n + Huawei LUNA2000C + SUN2000 + Climatizzatore
-
-Automazione energetica completa basata su n8n e Modbus TCP, per gestire in modo intelligente:
-	•	sistema fotovoltaico Huawei SUN2000,
-	•	batteria Huawei LUNA2000C,
-	•	climatizzatore / pompa di calore collegata in rete (Modbus o MQTT),
-	•	e un agente IA (Mixtral / Ollama) che decide come ottimizzare carica, scarica e comfort.
-
-Tutto gira in rete LAN chiusa (es. rete scolastica), senza aprire porte pubbliche, grazie a ZeroTier e Cloudflare Tunnel.
+Perfetto 👍
+Ecco il file README.md completo, già formattato in Markdown GitHub-ready (puoi copiarlo direttamente nella root del tuo repository).
+Include tutta la parte tecnica su LUNA2000C, inverter, climatizzatore, n8n, IA, Modbus, ZeroTier e Cloudflare.
 
 ⸻
 
-🧩 Architettura generale
 
-                           ┌────────────────────┐
-                           │      Mixtral IA    │
-                           │  (docker Ollama)   │
-                           └────────┬───────────┘
-                                    │
-                                    ▼
- ┌──────────────┐   Modbus TCP   ┌──────────────┐
- │ Huawei SUN2000│◄─────────────►│ n8n (Docker) │
- │ Inverter FV  │                │  + pymodbus   │
- └──────────────┘                └──────┬────────┘
-                                        │
-        Modbus TCP                      │
+# ⚡ Smart Energy & Climate Control  
+### n8n + Huawei LUNA2000C + SUN2000 + Climatizzatore (AI-powered)
+
+Automazione energetica completa basata su **n8n** e **Modbus TCP**, per gestire in modo intelligente:
+- sistema fotovoltaico **Huawei SUN2000**,  
+- batteria **Huawei LUNA2000C**,  
+- **climatizzatore / pompa di calore** collegato in rete (Modbus o MQTT),  
+- e un **agente IA** (Mixtral / Ollama) che ottimizza carica, scarica e comfort termico.
+
+Tutto gira **in rete LAN chiusa** (es. rete scolastica), senza aprire porte pubbliche, grazie a **ZeroTier** e **Cloudflare Tunnel**.
+
+---
+
+## 🧩 Architettura generale
+
+                       ┌────────────────────┐
+                       │      Mixtral IA    │
+                       │  (docker Ollama)   │
+                       └────────┬───────────┘
+                                │
+                                ▼
+
+┌──────────────┐   Modbus TCP   ┌──────────────┐
+│ Huawei SUN2000│◄─────────────►│ n8n (Docker) │
+│ Inverter FV  │                │  + pymodbus   │
+└──────────────┘                └──────┬────────┘
+│
+Modbus TCP                      │
 ┌──────────────┐                        │
 │ LUNA2000C    │◄───────────────────────┘
 │ Batteria ESS │
 └──────────────┘
 
-      ▲
-      │ MQTT / Modbus TCP
-      ▼
+  ▲
+  │ MQTT / Modbus TCP
+  ▼
+
 ┌────────────────┐
 │ Climatizzatore │  ← controllato da n8n in base a SOC, PV e temperatura
 └────────────────┘
 
-               ▼
-     Telegram / Grafana / DB
+           ▼
+ Telegram / Grafana / DB
 
+---
 
-⸻
+## ⚙️ Componenti principali (Docker)
 
-⚙️ Componenti principali (Docker)
-
+```yaml
 version: '3.8'
 services:
   n8n:
@@ -89,7 +99,7 @@ services:
 🔋 LUNA2000C (batteria)
 
 Nome	Indirizzo	Tipo	Unità	Descrizione
-Stato batteria	32000	UInt16	—	Idle/Charge/Discharge
+Stato batteria	32000	UInt16	—	Idle / Charge / Discharge
 Potenza	32002	Int16	W	Potenza attuale
 SOC	32005	UInt16	%	Stato di carica
 Tensione	32004	UInt16	V	Voltaggio medio
@@ -113,9 +123,9 @@ Potenza di uscita	32016	Int32	W	Energia immessa in rete/carichi
 ❄️ Climatizzatore (Modbus / MQTT)
 
 Nome	Indirizzo o Topic	Tipo	Descrizione
-Temperatura interna	40001	UInt16	°C * 10
+Temperatura interna	40001	UInt16	°C × 10
 Stato	40002	UInt16	0=OFF, 1=ON
-Setpoint	40003	UInt16	°C * 10
+Setpoint	40003	UInt16	°C × 10
 Potenza richiesta	MQTT home/clima/power	W	Lettura energia attiva
 Comando ON/OFF	MQTT home/clima/cmd	testo	“on” / “off”
 
@@ -128,22 +138,22 @@ from pymodbus.client import ModbusTcpClient
 
 client = ModbusTcpClient('192.168.10.50', port=502)
 client.connect()
+
 rr = client.read_holding_registers(32005, 1, unit=1)
 soc = rr.registers[0]
-client.close()
 
 if soc < 20:
-    # forza carica
-    client.write_register(41000, 1, unit=1)
+    client.write_register(41000, 1, unit=1)  # forza carica
 elif soc > 90:
-    # disattiva carica, abilita climatizzatore
-    client.write_register(41000, 0, unit=1)
-    print("Avvio climatizzatore per consumo PV")
+    client.write_register(41000, 0, unit=1)  # disattiva carica
+    print("Avvio climatizzatore per consumo FV")
+
+client.close()
 
 
 ⸻
 
-🧠 Prompt per l’agente IA (file: PROMPT_AGENT.txt)
+🧠 Prompt per l’agente IA (PROMPT_AGENT.txt)
 
 Tu sei l’agente energetico di un edificio scolastico.
 Hai accesso a dati da inverter Huawei SUN2000, batteria LUNA2000C e climatizzatore.
@@ -176,7 +186,7 @@ Regole di base:
 
 Rispondi sempre con JSON valido.
 
-Esempio di output IA:
+Esempio output IA:
 
 {
   "force_charge": false,
@@ -190,12 +200,12 @@ Esempio di output IA:
 
 🧩 Workflow n8n (semplificato)
 	1.	Trigger ogni 60s
-	2.	Nodo Python (pymodbus) → leggi SOC, PV Power, Temp
+	2.	Nodo Python (pymodbus) → legge SOC, PV Power, Temperatura
 	3.	Nodo HTTP → Mixtral → invia prompt + dati
 	4.	Nodo IF → in base a JSON ricevuto:
-	•	se force_charge=true → mbpoll -r 41000 -t 3:int -0 1
-	•	se force_discharge=true → mbpoll -r 41001 -t 3:int -0 1
-	•	se climate_mode="on" → MQTT publish home/clima/cmd=on
+	•	force_charge=true → mbpoll -r 41000 -t 3:int -0 1
+	•	force_discharge=true → mbpoll -r 41001 -t 3:int -0 1
+	•	climate_mode="on" → MQTT publish home/clima/cmd=on
 	5.	Nodo Telegram → invia log decisione IA
 
 ⸻
@@ -203,8 +213,8 @@ Esempio di output IA:
 🔒 Sicurezza di rete
 	•	Nessuna porta pubblica (502 o 5678) esposta.
 	•	Comunicazioni interne → rete LAN o ZeroTier mesh privata.
-	•	Accesso remoto alla dashboard → solo tramite Cloudflare Tunnel (autenticato con Keycloak/Access).
-	•	Tutte le scritture Modbus loggate in PostgreSQL con timestamp.
+	•	Accesso remoto alla dashboard → Cloudflare Tunnel autenticato (Keycloak / Access).
+	•	Tutte le scritture Modbus vengono loggate su PostgreSQL con timestamp.
 
 ⸻
 
@@ -212,7 +222,7 @@ Esempio di output IA:
 	•	Mini-PC Linux (es. Intel NUC o simile, 8 GB RAM)
 	•	Docker + docker-compose
 	•	Libreria pymodbus o utility mbpoll
-	•	Inverter e batteria Huawei in LAN con Modbus TCP abilitato
+	•	Inverter e batteria Huawei in LAN con Modbus TCP attivo
 	•	Climatizzatore con Modbus o MQTT gateway
 
 ⸻
@@ -223,17 +233,45 @@ git clone https://github.com/<tuo_utente>/smart-energy-n8n.git
 cd smart-energy-n8n
 docker compose up -d
 
-Apri http://localhost:5678 per accedere a n8n, importa il workflow in /n8n-workflows/.
+Poi apri http://localhost:5678 per accedere a n8n e importa il workflow in /n8n-workflows/.
 
 ⸻
 
-✅ Obiettivi principali
+✅ Obiettivi del progetto
 	•	Gestione intelligente e autonoma di energia e comfort.
-	•	Tutto in locale, senza cloud terzi.
-	•	Sicurezza elevata e log completa di ogni comando.
-	•	Possibilità di estendere il sistema a sensori ambientali, luci, ventilazione, ecc.
+	•	Tutto in locale, senza dipendenza da cloud esterni.
+	•	Sicurezza e controllo completo via rete privata.
+	•	Log ed esportazione dati per analisi e miglioramento IA.
 
 ⸻
 
-Vuoi che ti generi direttamente anche il file n8n-workflow.json con il flusso già pronto (lettura → IA → comando → notifica)?
-Posso crearlo subito come file da importare nel repository. Vuoi che proceda?
+📂 Struttura repository suggerita
+
+.
+├── README.md
+├── docker-compose.yml
+├── n8n-workflows/
+│   ├── read_soc_and_act.json
+│   └── clima_control.json
+├── scripts/
+│   ├── test_mbpoll.sh
+│   └── pymodbus_example.py
+├── examples/
+│   ├── config_modbus.md
+│   └── network_notes.md
+└── PROMPT_AGENT.txt
+
+
+⸻
+
+🔧 Autore
+
+Sistema sviluppato per il Comune di Magliano in Toscana,
+Ufficio Tecnico – progetto di automazione energetica locale (2025).
+
+⸻
+
+
+---
+
+Vuoi che ti generi subito anche il file `PROMPT_AGENT.txt` separato e il `docker-compose.yml` coerente con questo README, così puoi creare direttamente il repository GitHub pronto all’uso?
