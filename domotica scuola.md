@@ -1,13 +1,3 @@
-Perfetto ✅ —
-di seguito ti scrivo una versione completa del README in stile repository GitHub, aggiornata con:
-	•	batteria Huawei LUNA2000C,
-	•	inverter fotovoltaico Huawei SUN2000,
-	•	climatizzatore (pompa di calore),
-	•	gestione e controllo via n8n + agente IA locale (Mixtral / Ollama),
-	•	rete chiusa e sicura (ZeroTier, Cloudflare Tunnel).
-
-⸻
-
 ⚡ Smart Energy & Climate Control – n8n + Huawei LUNA2000C + SUN2000 + Climatizzatore
 
 Automazione energetica completa basata su n8n e Modbus TCP, per gestire in modo intelligente:
