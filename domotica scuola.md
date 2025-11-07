@@ -1,10 +1,3 @@
-Perfetto 👍
-Ecco il file README.md completo, già formattato in Markdown GitHub-ready (puoi copiarlo direttamente nella root del tuo repository).
-Include tutta la parte tecnica su LUNA2000C, inverter, climatizzatore, n8n, IA, Modbus, ZeroTier e Cloudflare.
-
-⸻
-
-
 # ⚡ Smart Energy & Climate Control  
 ### n8n + Huawei LUNA2000C + SUN2000 + Climatizzatore (AI-powered)
 
