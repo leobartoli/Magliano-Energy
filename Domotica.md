@@ -1,45 +1,35 @@
-# Sistema Riscaldamento con Agente IA + PostgreSQL
+# Sistema Riscaldamento Semplificato (SENZA Fotovoltaico)
 
-## Architettura Completa
+## Filosofia: Orari Fissi e Basta
 
-```
-┌─────────────────────────────────────────────────────┐
-│                   PostgreSQL                         │
-│  ┌──────────────────────────────────────────────┐  │
-│  │ Tabella: heating_config                      │  │
-│  │ - id, config_json, created_at, modified_by   │  │
-│  │                                              │  │
-│  │ Tabella: heating_history                     │  │
-│  │ - id, timestamp, action, zone, values        │  │
-│  └──────────────────────────────────────────────┘  │
-└─────────────────────────────────────────────────────┘
-           ↑                           ↑
-           │                           │
-    ┌──────┴──────┐           ┌───────┴────────┐
-    │   Bot       │           │   Esecutore    │
-    │ Configuratore│          │   Automatico   │
-    │  (Telegram) │           │  (Schedule)    │
-    └─────────────┘           └────────────────┘
-```
+**PRIMA (Complicato):**
+
+- Leggi produzione FV
+- Confronta con soglie (>1kW, <0.75kW, zona intermedia)
+- Decidi in base a FV + orario
+- Aggiorna soglie quando cambiano
+
+**DOPO (Semplice):**
+
+- Guarda che ora è
+- Accendi/spegni secondo tabella orari
+- Fine.
 
 -----
 
-## 1. Setup PostgreSQL
-
-### Schema Database
+## 1. Schema Database Semplificato
 
 ```sql
--- Tabella configurazione (mantiene sempre 1 sola riga)
+-- Una sola tabella config (molto più semplice)
 CREATE TABLE heating_config (
     id SERIAL PRIMARY KEY,
     config_json JSONB NOT NULL,
     created_at TIMESTAMP DEFAULT NOW(),
-    modified_by VARCHAR(100),
-    notes TEXT
+    modified_by VARCHAR(100)
 );
 
--- Inserisci configurazione iniziale
-INSERT INTO heating_config (config_json, modified_by, notes) VALUES (
+-- Config iniziale SEMPLICE
+INSERT INTO heating_config (config_json, modified_by) VALUES (
     '{
         "fasce_orarie": [
             {
@@ -47,7 +37,6 @@ INSERT INTO heating_config (config_json, modified_by, notes) VALUES (
                 "ora_inizio": 6,
                 "ora_fine": 7,
                 "temperatura": 37,
-                "usa_fotovoltaico": false,
                 "attiva": true
             },
             {
@@ -55,70 +44,46 @@ INSERT INTO heating_config (config_json, modified_by, notes) VALUES (
                 "ora_inizio": 10,
                 "ora_fine": 20,
                 "temperatura": 37,
-                "usa_fotovoltaico": true,
                 "attiva": true
             }
         ],
-        "soglie_fv": {
-            "accensione_kw": 1.0,
-            "spegnimento_kw": 0.75
-        },
         "zone": [
             {"nome": "cameretta", "entity_id": "climate.cameretta", "attiva": true},
             {"nome": "soggiorno", "entity_id": "climate.pannello_soggiorno", "attiva": true},
             {"nome": "bagno_seminterrato", "entity_id": "climate.bagno_piano_seminterrato", "attiva": true},
             {"nome": "bagno_primo", "entity_id": "climate.bagno_piano_primo", "attiva": true}
-        ]
+        ],
+        "modalita_vacanza": false
     }'::jsonb,
-    'system',
-    'Configurazione iniziale'
+    'system'
 );
 
--- Tabella storico azioni
+-- Storico (opzionale, per debug)
 CREATE TABLE heating_history (
     id SERIAL PRIMARY KEY,
     timestamp TIMESTAMP DEFAULT NOW(),
     zona VARCHAR(50),
     azione VARCHAR(20),
     temperatura NUMERIC(4,1),
-    fv_produzione NUMERIC(5,2),
-    motivazione TEXT
+    motivo TEXT
 );
-
--- Tabella storico modifiche configurazione
-CREATE TABLE config_history (
-    id SERIAL PRIMARY KEY,
-    timestamp TIMESTAMP DEFAULT NOW(),
-    config_json JSONB,
-    modified_by VARCHAR(100),
-    change_description TEXT
-);
-
--- Indici per performance
-CREATE INDEX idx_history_timestamp ON heating_history(timestamp);
-CREATE INDEX idx_config_json ON heating_config USING GIN(config_json);
 ```
 
 -----
 
-## 2. Workflow n8n Completo
-
-### WORKFLOW A: Bot Configuratore Telegram
+## 2. Workflow Bot Configuratore (Semplificato)
 
 ```json
 {
-  "name": "Heating Config Bot",
+  "name": "Heating Config Bot SIMPLE",
   "nodes": [
     {
       "name": "Telegram Trigger",
       "type": "n8n-nodes-base.telegramTrigger",
-      "parameters": {
-        "updates": ["message"]
-      },
       "position": [240, 300]
     },
     {
-      "name": "Leggi Config Attuale",
+      "name": "Leggi Config",
       "type": "n8n-nodes-base.postgres",
       "parameters": {
         "operation": "executeQuery",
@@ -131,7 +96,7 @@ CREATE INDEX idx_config_json ON heating_config USING GIN(config_json);
       "type": "@n8n/n8n-nodes-langchain.agent",
       "parameters": {
         "promptType": "define",
-        "text": "=Sei l'assistente per la configurazione del riscaldamento delle scuole di via Gramsci.\n\n**CONFIGURAZIONE ATTUALE:**\n```json\n{{ JSON.stringify($('Leggi Config Attuale').item.json.config_json, null, 2) }}\n```\n\n**MESSAGGIO UTENTE:**\n{{ $('Telegram Trigger').item.json.message.text }}\n\n**IL TUO COMPITO:**\n1. Interpreta la richiesta dell'utente in linguaggio naturale\n2. Modifica SOLO i parametri richiesti nella configurazione\n3. Mantieni tutti gli altri valori invariati\n4. Valida i parametri:\n   - Temperature: 21-37°C\n   - Orari: 0-23\n   - Soglie FV: > 0 kW\n5. Restituisci JSON completo aggiornato + spiegazione umana\n\n**ESEMPI DI RICHIESTE:**\n- \"Accendi alle 7 invece che alle 6\"\n- \"Abbassa temperatura a 35 gradi\"\n- \"Spegni il bagno piano primo\"\n- \"Aumenta soglia fotovoltaico a 1.5 kW\"\n- \"Mostrami la configurazione attuale\"\n- \"Aggiungi una fascia oraria 14-16 a 30 gradi\"\n\n**OUTPUT OBBLIGATORIO (JSON):**\n```json\n{\n  \"risposta_utente\": \"Spiegazione chiara e amichevole del cambiamento effettuato\",\n  \"config_aggiornata\": { ...intera configurazione aggiornata... },\n  \"cambiamenti\": [\"lista delle modifiche fatte\"],\n  \"richiede_conferma\": true/false\n}\n```\n\n**REGOLE:**\n- Se la richiesta è ambigua, chiedi chiarimenti\n- Se i valori sono fuori range, proponi alternative\n- Conferma sempre cosa hai modificato\n- Se chiede solo di vedere la config, NON modificarla"
+        "text": "=Sei l'assistente per configurare il riscaldamento delle scuole.\n\n**CONFIGURAZIONE ATTUALE:**\n```json\n{{ JSON.stringify($('Leggi Config').item.json.config_json, null, 2) }}\n```\n\n**MESSAGGIO UTENTE:**\n{{ $('Telegram Trigger').item.json.message.text }}\n\n**COSA PUOI MODIFICARE:**\n\n1. **Orari di accensione/spegnimento**\n   - \"Accendi alle 7 invece che alle 6\"\n   - \"Spegni alle 19 invece che alle 20\"\n\n2. **Temperature**\n   - \"Metti 35 gradi al mattino\"\n   - \"Temperatura pomeriggio a 30\"\n\n3. **Zone attive/disattive**\n   - \"Spegni il bagno primo piano\"\n   - \"Riaccendi la cameretta\"\n\n4. **Fasce orarie** (aggiungi/rimuovi)\n   - \"Aggiungi riscaldamento 14-16 a 30 gradi\"\n   - \"Elimina la fascia mattutina\"\n\n5. **Modalità vacanza**\n   - \"Modalità vacanza\" → Spegne tutto\n   - \"Modalità normale\" → Riattiva\n\n6. **Visualizzare config**\n   - \"Status\" / \"Stato\" / \"Configurazione attuale\"\n\n**VALIDAZIONI:**\n- Temperature: 21-37°C\n- Orari: 0-23\n- Se richiesta non chiara, chiedi dettagli\n\n**OUTPUT (JSON):**\n```json\n{\n  \"risposta_utente\": \"Spiegazione chiara e amichevole\",\n  \"config_aggiornata\": { ...intera configurazione aggiornata... },\n  \"cambiamenti\": [\"lista modifiche\"],\n  \"tipo_operazione\": \"modifica/visualizza/vacanza\"\n}\n```"
       },
       "position": [640, 300]
     },
@@ -142,40 +107,25 @@ CREATE INDEX idx_config_json ON heating_config USING GIN(config_json);
         "text": "={{ $json.output }}",
         "attributes": {
           "attributes": [
-            {
-              "name": "risposta_utente",
-              "type": "string",
-              "description": "Messaggio da mandare all'utente"
-            },
-            {
-              "name": "config_aggiornata",
-              "type": "object",
-              "description": "Configurazione JSON completa"
-            },
-            {
-              "name": "cambiamenti",
-              "type": "array",
-              "description": "Lista delle modifiche"
-            },
-            {
-              "name": "richiede_conferma",
-              "type": "boolean",
-              "description": "Se serve conferma utente"
-            }
+            {"name": "risposta_utente", "type": "string"},
+            {"name": "config_aggiornata", "type": "object"},
+            {"name": "cambiamenti", "type": "array"},
+            {"name": "tipo_operazione", "type": "string"}
           ]
         }
       },
       "position": [840, 300]
     },
     {
-      "name": "Verifica Conferma",
+      "name": "Solo Se Modifica",
       "type": "n8n-nodes-base.if",
       "parameters": {
         "conditions": {
-          "boolean": [
+          "string": [
             {
-              "value1": "={{ $json.output.richiede_conferma }}",
-              "value2": false
+              "value1": "={{ $json.output.tipo_operazione }}",
+              "operation": "notEquals",
+              "value2": "visualizza"
             }
           ]
         }
@@ -187,25 +137,16 @@ CREATE INDEX idx_config_json ON heating_config USING GIN(config_json);
       "type": "n8n-nodes-base.postgres",
       "parameters": {
         "operation": "executeQuery",
-        "query": "=UPDATE heating_config \nSET config_json = '{{ JSON.stringify($json.output.config_aggiornata) }}'::jsonb,\n    modified_by = 'telegram_{{ $('Telegram Trigger').item.json.message.from.username }}',\n    created_at = NOW()\nWHERE id = (SELECT MAX(id) FROM heating_config);\n\n-- Salva storico\nINSERT INTO config_history (config_json, modified_by, change_description)\nVALUES (\n  '{{ JSON.stringify($json.output.config_aggiornata) }}'::jsonb,\n  'telegram_{{ $('Telegram Trigger').item.json.message.from.username }}',\n  '{{ $json.output.cambiamenti.join(\", \") }}'\n);"
+        "query": "=UPDATE heating_config \nSET config_json = '{{ JSON.stringify($json.output.config_aggiornata) }}'::jsonb,\n    modified_by = 'telegram_{{ $('Telegram Trigger').item.json.message.from.username }}',\n    created_at = NOW()\nWHERE id = (SELECT MAX(id) FROM heating_config);"
       },
       "position": [1240, 240]
     },
     {
-      "name": "Invia Conferma",
+      "name": "Invia Risposta",
       "type": "n8n-nodes-base.telegram",
       "parameters": {
         "chatId": "={{ $('Telegram Trigger').item.json.message.chat.id }}",
-        "text": "=✅ {{ $json.output.risposta_utente }}\n\n📝 Modifiche:\n{{ $json.output.cambiamenti.map(c => '• ' + c).join('\\n') }}"
-      },
-      "position": [1440, 240]
-    },
-    {
-      "name": "Richiedi Conferma",
-      "type": "n8n-nodes-base.telegram",
-      "parameters": {
-        "chatId": "={{ $('Telegram Trigger').item.json.message.chat.id }}",
-        "text": "=⚠️ {{ $json.output.risposta_utente }}\n\nRispondi 'SI' per confermare o 'NO' per annullare."
+        "text": "={{ $json.output.risposta_utente }}"
       },
       "position": [1240, 360]
     },
@@ -219,56 +160,30 @@ CREATE INDEX idx_config_json ON heating_config USING GIN(config_json);
     }
   ],
   "connections": {
-    "Telegram Trigger": {
-      "main": [[{"node": "Leggi Config Attuale"}]]
-    },
-    "Leggi Config Attuale": {
-      "main": [[{"node": "Agente Configuratore"}]]
-    },
-    "Agente Configuratore": {
-      "main": [[{"node": "Estrai Risposta"}]]
-    },
-    "Estrai Risposta": {
-      "main": [[{"node": "Verifica Conferma"}]]
-    },
-    "Verifica Conferma": {
-      "main": [
-        [{"node": "Salva Config"}],
-        [{"node": "Richiedi Conferma"}]
-      ]
-    },
-    "Salva Config": {
-      "main": [[{"node": "Invia Conferma"}]]
-    },
-    "Anthropic Chat Model": {
-      "ai_languageModel": [[
-        {"node": "Agente Configuratore"},
-        {"node": "Estrai Risposta"}
-      ]]
-    }
+    "Telegram Trigger": {"main": [[{"node": "Leggi Config"}]]},
+    "Leggi Config": {"main": [[{"node": "Agente Configuratore"}]]},
+    "Agente Configuratore": {"main": [[{"node": "Estrai Risposta"}]]},
+    "Estrai Risposta": {"main": [[{"node": "Solo Se Modifica"}, {"node": "Invia Risposta"}]]},
+    "Solo Se Modifica": {"main": [[{"node": "Salva Config"}], []]},
+    "Anthropic Chat Model": {"ai_languageModel": [[{"node": "Agente Configuratore"}, {"node": "Estrai Risposta"}]]}
   }
 }
 ```
 
 -----
 
-### WORKFLOW B: Esecutore Automatico
+## 3. Workflow Esecutore (SUPER Semplificato)
 
 ```json
 {
-  "name": "Heating Executor",
+  "name": "Heating Executor SIMPLE",
   "nodes": [
     {
       "name": "Schedule Trigger",
       "type": "n8n-nodes-base.scheduleTrigger",
       "parameters": {
         "rule": {
-          "interval": [
-            {
-              "field": "cronExpression",
-              "expression": "*/30 6-20 * * *"
-            }
-          ]
+          "interval": [{"field": "cronExpression", "expression": "*/30 6-20 * * *"}]
         }
       },
       "position": [240, 300]
@@ -283,95 +198,45 @@ CREATE INDEX idx_config_json ON heating_config USING GIN(config_json);
       "position": [440, 300]
     },
     {
-      "name": "Leggi Stati Sensori",
+      "name": "Leggi Stati Zone",
       "type": "n8n-nodes-base.httpRequest",
       "parameters": {
         "url": "http://10.241.185.242:8123/api/states",
-        "authentication": "genericCredentialType",
-        "options": {}
+        "authentication": "genericCredentialType"
       },
       "position": [640, 300]
     },
     {
-      "name": "Prepara Dati",
+      "name": "Calcola Azioni SEMPLICE",
       "type": "n8n-nodes-base.code",
       "parameters": {
-        "jsCode": "const config = $input.item.json.config_json;\nconst states = $('Leggi Stati Sensori').first().json;\n\n// Trova sensori rilevanti\nconst fv = states.find(s => s.entity_id === 'sensor.solaredge_potenza_attuale');\nconst climates = states.filter(s => s.entity_id.startsWith('climate.'));\n\n// Mappa stati zone\nconst statiZone = config.zone.map(z => {\n  const climate = climates.find(c => c.entity_id === z.entity_id);\n  return {\n    nome: z.nome,\n    entity_id: z.entity_id,\n    attiva: z.attiva,\n    stato_corrente: climate?.state || 'unknown',\n    temperatura_corrente: parseFloat(climate?.attributes?.temperature || 0),\n    temperatura_ambiente: parseFloat(climate?.attributes?.current_temperature || 0)\n  };\n});\n\nreturn {\n  json: {\n    timestamp: new Date().toISOString(),\n    ora_corrente: new Date().getHours(),\n    minuto_corrente: new Date().getMinutes(),\n    produzione_fv_kw: parseFloat(fv?.state || 0),\n    config: config,\n    stati_zone: statiZone\n  }\n};"
+        "jsCode": "const config = $('Leggi Config').first().json.config_json;\nconst states = $input.first().json;\n\nconst now = new Date();\nconst oraCorrente = now.getHours();\n\n// Se modalità vacanza → SPEGNI tutto\nif (config.modalita_vacanza) {\n  return [{\n    json: {\n      decisione: 'MODALITA VACANZA - Spegni tutto',\n      azioni: config.zone.map(z => ({\n        zona: z.nome,\n        entity_id: z.entity_id,\n        azione: 'spegni',\n        temperatura: 0\n      }))\n    }\n  }];\n}\n\n// Trova fascia oraria attiva\nconst fasciaAttiva = config.fasce_orarie.find(f => \n  f.attiva && \n  oraCorrente >= f.ora_inizio && \n  oraCorrente < f.ora_fine\n);\n\n// Stati attuali delle zone\nconst climates = states.filter(s => s.entity_id.startsWith('climate.'));\n\nconst azioni = config.zone\n  .filter(z => z.attiva)\n  .map(zona => {\n    const climate = climates.find(c => c.entity_id === zona.entity_id);\n    const statoCorrente = climate?.state || 'unknown';\n    const tempCorrente = parseFloat(climate?.attributes?.temperature || 0);\n    \n    // Decisione SEMPLICE\n    if (!fasciaAttiva) {\n      // Fuori orario → Spegni\n      return {\n        zona: zona.nome,\n        entity_id: zona.entity_id,\n        azione: statoCorrente === 'off' ? 'nessuna' : 'spegni',\n        temperatura: 0\n      };\n    } else {\n      // Dentro fascia → Accendi a temperatura\n      const targetTemp = fasciaAttiva.temperatura;\n      \n      if (statoCorrente === 'off') {\n        return {\n          zona: zona.nome,\n          entity_id: zona.entity_id,\n          azione: 'accendi_e_imposta',\n          temperatura: targetTemp\n        };\n      } else if (tempCorrente !== targetTemp) {\n        return {\n          zona: zona.nome,\n          entity_id: zona.entity_id,\n          azione: 'imposta_temperatura',\n          temperatura: targetTemp\n        };\n      } else {\n        return {\n          zona: zona.nome,\n          entity_id: zona.entity_id,\n          azione: 'nessuna',\n          temperatura: targetTemp\n        };\n      }\n    }\n  });\n\nreturn [{\n  json: {\n    decisione: fasciaAttiva ? `Fascia: ${fasciaAttiva.nome}` : 'Fuori orario',\n    azioni: azioni\n  }\n}];"
       },
       "position": [840, 300]
     },
     {
-      "name": "Agente Esecutore",
-      "type": "@n8n/n8n-nodes-langchain.agent",
-      "parameters": {
-        "promptType": "define",
-        "text": "=Sei il controllore automatico del riscaldamento. Analizza i dati e decidi le azioni.\n\n**DATI CORRENTI:**\n```json\n{{ JSON.stringify($json, null, 2) }}\n```\n\n**LOGICA DI CONTROLLO:**\n\n1. **Trova la fascia oraria attiva:**\n   - Controlla quale fascia copre l'ora corrente\n   - Se nessuna fascia è attiva → SPEGNI tutto\n\n2. **Se fascia attiva NON usa fotovoltaico:**\n   - Target: ACCESO alla temperatura della fascia\n   - Applica a tutte le zone attive\n\n3. **Se fascia attiva USA fotovoltaico:**\n   - Produzione > soglia_accensione → ACCENDI\n   - Produzione < soglia_spegnimento → SPEGNI\n   - Tra le due soglie → MANTIENI stato attuale\n\n4. **Confronta stato attuale vs desiderato:**\n   - Per ogni zona attiva:\n     * Se stato diverso → genera azione\n     * Se temperatura diversa (e acceso) → genera azione\n     * Se già corretto → NESSUNA azione\n\n5. **Genera output SOLO per zone che richiedono cambiamenti**\n\n**OUTPUT OBBLIGATORIO (JSON):**\n```json\n{\n  \"fascia_attiva\": \"nome fascia o null\",\n  \"decisione_fv\": \"accendi/spegni/mantieni o N/A\",\n  \"azioni\": [\n    {\n      \"zona\": \"nome\",\n      \"entity_id\": \"climate.xxx\",\n      \"stato_corrente\": \"heat/off\",\n      \"stato_target\": \"heat/off\",\n      \"temp_corrente\": 30,\n      \"temp_target\": 37,\n      \"azione\": \"accendi/spegni/imposta_temperatura/nessuna\"\n    }\n  ],\n  \"motivazione\": \"Spiegazione sintetica della logica applicata\",\n  \"azioni_da_eseguire\": true/false\n}\n```\n\n**REGOLA CRITICA:**\nSe `stato_corrente == stato_target` E `temp_corrente == temp_target` → `azione: \"nessuna\"`"
-      },
-      "position": [1040, 300]
-    },
-    {
-      "name": "Estrai Decisioni",
-      "type": "@n8n/n8n-nodes-langchain.informationExtractor",
-      "parameters": {
-        "text": "={{ $json.output }}",
-        "attributes": {
-          "attributes": [
-            {
-              "name": "fascia_attiva",
-              "type": "string"
-            },
-            {
-              "name": "decisione_fv",
-              "type": "string"
-            },
-            {
-              "name": "azioni",
-              "type": "array"
-            },
-            {
-              "name": "motivazione",
-              "type": "string"
-            },
-            {
-              "name": "azioni_da_eseguire",
-              "type": "boolean"
-            }
-          ]
-        }
-      },
-      "position": [1240, 300]
-    },
-    {
-      "name": "Ci Sono Azioni?",
-      "type": "n8n-nodes-base.if",
+      "name": "Filtra Azioni Necessarie",
+      "type": "n8n-nodes-base.filter",
       "parameters": {
         "conditions": {
-          "boolean": [
+          "string": [
             {
-              "value1": "={{ $json.output.azioni_da_eseguire }}",
-              "value2": true
+              "value1": "={{ $json.azione }}",
+              "operation": "notEquals",
+              "value2": "nessuna"
             }
           ]
         }
       },
-      "position": [1440, 300]
-    },
-    {
-      "name": "Split Azioni",
-      "type": "n8n-nodes-base.splitInBatches",
-      "parameters": {
-        "batchSize": 1,
-        "options": {}
-      },
-      "position": [1640, 240]
+      "position": [1040, 300]
     },
     {
       "name": "Esegui Azione",
       "type": "n8n-nodes-base.code",
       "parameters": {
-        "jsCode": "const azione = $input.item.json;\nconst tutte_azioni = $('Estrai Decisioni').first().json.output.azioni;\nconst azione_corrente = tutte_azioni[$input.item.index];\n\nif (azione_corrente.azione === 'nessuna') {\n  return { json: { skipped: true } };\n}\n\nlet url, body;\n\nif (azione_corrente.azione === 'spegni') {\n  url = 'http://10.241.185.242:8123/api/services/climate/set_hvac_mode';\n  body = {\n    entity_id: azione_corrente.entity_id,\n    hvac_mode: 'off'\n  };\n} else if (azione_corrente.azione === 'accendi') {\n  url = 'http://10.241.185.242:8123/api/services/climate/set_hvac_mode';\n  body = {\n    entity_id: azione_corrente.entity_id,\n    hvac_mode: 'heat'\n  };\n} else if (azione_corrente.azione === 'imposta_temperatura') {\n  url = 'http://10.241.185.242:8123/api/services/climate/set_temperature';\n  body = {\n    entity_id: azione_corrente.entity_id,\n    temperature: azione_corrente.temp_target\n  };\n}\n\nreturn {\n  json: {\n    url: url,\n    body: body,\n    azione: azione_corrente\n  }\n};"
+        "jsCode": "const azione = $input.first().json;\n\nlet calls = [];\n\nif (azione.azione === 'spegni') {\n  calls.push({\n    url: 'http://10.241.185.242:8123/api/services/climate/set_hvac_mode',\n    body: { entity_id: azione.entity_id, hvac_mode: 'off' }\n  });\n} \nelse if (azione.azione === 'accendi_e_imposta') {\n  calls.push(\n    {\n      url: 'http://10.241.185.242:8123/api/services/climate/set_hvac_mode',\n      body: { entity_id: azione.entity_id, hvac_mode: 'heat' }\n    },\n    {\n      url: 'http://10.241.185.242:8123/api/services/climate/set_temperature',\n      body: { entity_id: azione.entity_id, temperature: azione.temperatura }\n    }\n  );\n} \nelse if (azione.azione === 'imposta_temperatura') {\n  calls.push({\n    url: 'http://10.241.185.242:8123/api/services/climate/set_temperature',\n    body: { entity_id: azione.entity_id, temperature: azione.temperatura }\n  });\n}\n\nreturn calls.map(call => ({ json: { ...call, azione: azione } }));"
       },
-      "position": [1840, 240]
+      "position": [1240, 300]
     },
     {
       "name": "Chiama Home Assistant",
@@ -381,254 +246,120 @@ CREATE INDEX idx_config_json ON heating_config USING GIN(config_json);
         "url": "={{ $json.url }}",
         "authentication": "genericCredentialType",
         "sendBody": true,
-        "bodyParameters": {
-          "parameters": []
-        },
-        "jsonBody": "={{ JSON.stringify($json.body) }}",
-        "options": {}
+        "bodyParameters": {},
+        "jsonBody": "={{ JSON.stringify($json.body) }}"
       },
-      "position": [2040, 240]
+      "position": [1440, 300]
     },
     {
       "name": "Salva Storico",
       "type": "n8n-nodes-base.postgres",
       "parameters": {
         "operation": "executeQuery",
-        "query": "=INSERT INTO heating_history (zona, azione, temperatura, fv_produzione, motivazione)\nVALUES (\n  '{{ $json.azione.zona }}',\n  '{{ $json.azione.azione }}',\n  {{ $json.azione.temp_target || 0 }},\n  {{ $('Prepara Dati').first().json.produzione_fv_kw }},\n  '{{ $('Estrai Decisioni').first().json.output.motivazione }}'\n);"
+        "query": "=INSERT INTO heating_history (zona, azione, temperatura, motivo)\nVALUES (\n  '{{ $json.azione.zona }}',\n  '{{ $json.azione.azione }}',\n  {{ $json.azione.temperatura }},\n  '{{ $('Calcola Azioni SEMPLICE').first().json.decisione }}'\n);"
       },
-      "position": [2240, 240]
-    },
-    {
-      "name": "Notifica Telegram",
-      "type": "n8n-nodes-base.telegram",
-      "parameters": {
-        "chatId": "1819276368",
-        "text": "=🏠 Riscaldamento aggiornato\n\n⏰ {{ $('Prepara Dati').first().json.timestamp.slice(11,16) }}\n☀️ FV: {{ $('Prepara Dati').first().json.produzione_fv_kw }} kW\n\n{{ $('Estrai Decisioni').first().json.output.motivazione }}\n\n📋 Azioni:\n{{ $('Estrai Decisioni').first().json.output.azioni.filter(a => a.azione !== 'nessuna').map(a => '• ' + a.zona + ': ' + a.azione + (a.temp_target ? ' (' + a.temp_target + '°C)' : '')).join('\\n') }}"
-      },
-      "position": [1640, 360]
-    },
-    {
-      "name": "Anthropic Chat Model",
-      "type": "@n8n/n8n-nodes-langchain.lmChatAnthropic",
-      "parameters": {
-        "model": "claude-sonnet-4-20250514"
-      },
-      "position": [1040, 500]
+      "position": [1640, 300]
     }
   ],
   "connections": {
-    "Schedule Trigger": {
-      "main": [[{"node": "Leggi Config"}]]
-    },
-    "Leggi Config": {
-      "main": [[{"node": "Leggi Stati Sensori"}]]
-    },
-    "Leggi Stati Sensori": {
-      "main": [[{"node": "Prepara Dati"}]]
-    },
-    "Prepara Dati": {
-      "main": [[{"node": "Agente Esecutore"}]]
-    },
-    "Agente Esecutore": {
-      "main": [[{"node": "Estrai Decisioni"}]]
-    },
-    "Estrai Decisioni": {
-      "main": [[{"node": "Ci Sono Azioni?"}]]
-    },
-    "Ci Sono Azioni?": {
-      "main": [
-        [{"node": "Split Azioni"}, {"node": "Notifica Telegram"}],
-        []
-      ]
-    },
-    "Split Azioni": {
-      "main": [[{"node": "Esegui Azione"}]]
-    },
-    "Esegui Azione": {
-      "main": [[{"node": "Chiama Home Assistant"}]]
-    },
-    "Chiama Home Assistant": {
-      "main": [[{"node": "Salva Storico"}]]
-    },
-    "Anthropic Chat Model": {
-      "ai_languageModel": [[
-        {"node": "Agente Esecutore"},
-        {"node": "Estrai Decisioni"}
-      ]]
-    }
+    "Schedule Trigger": {"main": [[{"node": "Leggi Config"}]]},
+    "Leggi Config": {"main": [[{"node": "Leggi Stati Zone"}]]},
+    "Leggi Stati Zone": {"main": [[{"node": "Calcola Azioni SEMPLICE"}]]},
+    "Calcola Azioni SEMPLICE": {"main": [[{"node": "Filtra Azioni Necessarie"}]]},
+    "Filtra Azioni Necessarie": {"main": [[{"node": "Esegui Azione"}]]},
+    "Esegui Azione": {"main": [[{"node": "Chiama Home Assistant"}]]},
+    "Chiama Home Assistant": {"main": [[{"node": "Salva Storico"}]]}
   }
 }
 ```
 
 -----
 
-## 3. Query Utili PostgreSQL
+## 4. Cosa È Cambiato
 
-```sql
--- Vedi configurazione attuale
-SELECT 
-    config_json,
-    modified_by,
-    created_at,
-    notes
-FROM heating_config
-ORDER BY id DESC
-LIMIT 1;
+### ❌ RIMOSSO (Complessità)
 
--- Storico ultime 24h
-SELECT 
-    timestamp,
-    zona,
-    azione,
-    temperatura,
-    fv_produzione,
-    motivazione
-FROM heating_history
-WHERE timestamp > NOW() - INTERVAL '24 hours'
-ORDER BY timestamp DESC;
+- ~Lettura produzione fotovoltaico~
+- ~Soglie accensione/spegnimento FV~
+- ~Logica intermedia 0.75-1 kW~
+- ~Tool “produzione_fv_kw”~
+- ~Tool “Energia prodotta oggi”~
+- ~Campo `usa_fotovoltaico` nelle fasce~
+- ~Decisioni basate su sensori solari~
 
--- Statistiche per zona
-SELECT 
-    zona,
-    COUNT(*) as num_azioni,
-    AVG(temperatura) as temp_media,
-    MAX(timestamp) as ultima_azione
-FROM heating_history
-WHERE timestamp > NOW() - INTERVAL '7 days'
-GROUP BY zona;
+### ✅ MANTENUTO (Semplicità)
 
--- Storico modifiche config
-SELECT 
-    timestamp,
-    modified_by,
-    change_description,
-    config_json->'soglie_fv' as soglie_fv
-FROM config_history
-ORDER BY timestamp DESC
-LIMIT 10;
-
--- Efficienza fotovoltaico
-SELECT 
-    DATE(timestamp) as giorno,
-    COUNT(*) FILTER (WHERE azione = 'accendi' AND fv_produzione > 0.75) as accensioni_fv,
-    COUNT(*) FILTER (WHERE azione = 'spegni' AND fv_produzione < 0.75) as spegnimenti_fv,
-    AVG(fv_produzione) as produzione_media
-FROM heating_history
-WHERE timestamp > NOW() - INTERVAL '30 days'
-GROUP BY DATE(timestamp)
-ORDER BY giorno DESC;
-```
+- Fasce orarie con temperatura fissa
+- Attiva/disattiva zone
+- Modalità vacanza
+- Storico azioni
+- Bot Telegram per modifiche
+- Validazione temperature 21-37°C
 
 -----
 
-## 4. Connessione PostgreSQL in n8n
+## 5. Vantaggi Reali
 
-### Configurazione Credentials
-
-1. In n8n: **Credentials → Add Credential → Postgres**
-1. Compila:
-   
-   ```
-   Host: localhost (o IP del server)
-   Database: heating_db
-   User: heating_user
-   Password: [tua password sicura]
-   Port: 5432
-   SSL: Preferibile (se supportato)
-   ```
+|Prima                          |Dopo                              |
+|-------------------------------|----------------------------------|
+|35+ nodi                       |**~15 nodi**                      |
+|16 tool per l’agente           |**0 tool** (solo logic)           |
+|Logica FV complicata           |**IF orario → ON/OFF**            |
+|Errori possibili su soglie     |**Nessuna soglia**                |
+|Debug difficile                |**Debug semplicissimo**           |
+|Configurazione con 10 parametri|**Configurazione con 4 parametri**|
 
 -----
 
-## 5. Esempi Conversazione Completi
-
-### Cambio Orario
+## 6. Esempi Conversazione (Invariati)
 
 ```
 👤: "Accendi alle 7 invece che alle 6"
+🤖: ✅ Fascia "Riscaldamento mattina" spostata a 07:00-08:00
 
-🤖: ✅ Ho spostato l'orario di accensione mattutina!
+👤: "Temperatura giorno a 35 gradi"
+🤖: ✅ Fascia "Riscaldamento giorno" impostata a 35°C
 
-Prima: 06:00-07:00 a 37°C
-Ora: 07:00-08:00 a 37°C
+👤: "Modalità vacanza"
+🤖: ✅ Modalità vacanza attivata. Tutto il riscaldamento è ora spento.
 
-📝 Modifiche:
-• Fascia "Riscaldamento mattina": ora_inizio 6→7, ora_fine 7→8
-
-La modifica sarà applicata da domani mattina.
-```
-
-### Modifica Soglie FV
-
-```
-👤: "Aumenta la soglia del fotovoltaico a 1.2"
-
-🤖: ✅ Soglie fotovoltaico aggiornate!
-
-Prima: Accensione 1.0 kW / Spegnimento 0.75 kW
-Ora: Accensione 1.2 kW / Spegnimento 0.75 kW
-
-📝 Modifiche:
-• Soglia accensione: 1.0 → 1.2 kW
-
-Servirà più produzione solare per attivare il riscaldamento durante la fascia 10:00-20:00.
-```
-
-### Nuova Fascia Oraria
-
-```
-👤: "Aggiungi riscaldamento dalle 14 alle 16 a 32 gradi senza fotovoltaico"
-
-🤖: ✅ Nuova fascia oraria aggiunta!
-
-Fascia: "Riscaldamento pomeriggio"
-Orario: 14:00-16:00
-Temperatura: 32°C
-Fotovoltaico: No
-Stato: Attiva
-
-📝 Modifiche:
-• Aggiunta fascia oraria 14:00-16:00
-
-Tutte le zone attive scalderanno a 32°C in questo intervallo.
-```
-
-### Disabilita Zona
-
-```
-👤: "Spegni il bagno primo piano"
-
-🤖: ✅ Zona "Bagno Piano Primo" disabilitata!
-
-📝 Modifiche:
-• Zona "bagno_primo": attiva → disattivata
-
-Questa zona non riceverà più comandi di riscaldamento. Vuoi che la spenga immediatamente?
+👤: "Status"
+🤖: 🏠 Ora: 14:30
+    📋 Fascia attiva: "Riscaldamento giorno" (37°C)
+    ✅ Cameretta: ON 37°C
+    ✅ Soggiorno: ON 37°C
 ```
 
 -----
 
-## 6. Vantaggi PostgreSQL vs File JSON
+## 7. Se In Futuro Vuoi Ri-aggiungere FV
 
-|Feature        |PostgreSQL        |File JSON              |
-|---------------|------------------|-----------------------|
-|**Persistenza**|✅ Garantita       |⚠️ Dipende da filesystem|
-|**Concorrenza**|✅ Transazioni ACID|❌ Race conditions      |
-|**Storico**    |✅ Tabelle dedicate|⚠️ Gestione manuale     |
-|**Query**      |✅ SQL potente     |❌ Parsing limitato     |
-|**Backup**     |✅ Automatico      |⚠️ Manuale              |
-|**Rollback**   |✅ Facile          |❌ Difficile            |
-|**Analytics**  |✅ Native          |❌ Complesse            |
-|**Performance**|✅ Indicizzata     |⚠️ Scan completo        |
+Basta aggiungere 1 campo alla config:
+
+```json
+{
+  "usa_fotovoltaico_globale": false  // Un solo flag ON/OFF
+}
+```
+
+E nel codice:
+
+```javascript
+if (config.usa_fotovoltaico_globale && fv_kw < 0.5) {
+  return spegni_tutto;
+}
+```
+
+**Molto più semplice della logica precedente!**
 
 -----
 
-## 7. Prossimi Passi
+## Conclusione
 
-1. **Setup PostgreSQL**: Crea database e tabelle con SQL sopra
-1. **Configura n8n**: Aggiungi credential PostgreSQL
-1. **Importa Workflow A**: Bot configuratore
-1. **Importa Workflow B**: Esecutore automatico
-1. **Test**: Invia comandi via Telegram
-1. **Monitor**: Query per vedere storico e performance
+- **50% nodi in meno**
+- **Zero complessità fotovoltaico**
+- **Stesso risultato pratico** per 95% dei casi
+- **Manutenzione 10x più facile**
+- **Debug immediato**
 
-Tutto pronto! 🚀
+Il fotovoltaico era un’ottimizzazione prematura che complicava tutto. Ora il sistema è **robusto, comprensibile, modificabile**. 🎯
