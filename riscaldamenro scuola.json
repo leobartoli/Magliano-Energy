@@ -1,0 +1,158 @@
+{
+  "nodes": [
+    // TRIGGER
+    {
+      "name": "Schedule Trigger",
+      "type": "scheduleTrigger",
+      "parameters": {
+        "rule": {
+          "interval": [{"triggerAtMinute": 30}]  // Ogni 30 minuti
+        }
+      }
+    },
+    
+    // LETTURA DATI
+    {
+      "name": "Leggi Stato Sistema",
+      "type": "httpRequest",
+      "parameters": {
+        "url": "http://10.241.185.242:8123/api/states",
+        "method": "GET",
+        "authentication": "genericCredentialType"
+      }
+    },
+    
+    {
+      "name": "Estrai Dati Rilevanti",
+      "type": "code",
+      "parameters": {
+        "jsCode": `
+const states = items[0].json;
+
+// Trova entità rilevanti
+const climate = states.filter(s => s.entity_id.startsWith('climate.'));
+const fv = states.find(s => s.entity_id === 'sensor.solaredge_potenza_attuale');
+
+// Stato corrente per ogni zona
+const zones = {
+  cameretta: climate.find(c => c.entity_id === 'climate.cameretta'),
+  soggiorno: climate.find(c => c.entity_id === 'climate.pannello_soggiorno'),
+  bagno_seminterrato: climate.find(c => c.entity_id === 'climate.bagno_piano_seminterrato'),
+  bagno_primo: climate.find(c => c.entity_id === 'climate.bagno_piano_primo')
+};
+
+return [{
+  json: {
+    timestamp: new Date().toISOString(),
+    produzione_fv_kw: parseFloat(fv?.state || 0),
+    zones: Object.entries(zones).map(([name, data]) => ({
+      name,
+      entity_id: data.entity_id,
+      current_state: data.state,
+      current_temp: parseFloat(data.attributes.temperature || 0)
+    }))
+  }
+}];
+`
+      }
+    },
+    
+    // LOGICA DECISIONALE SEMPLIFICATA
+    {
+      "name": "Calcola Azioni",
+      "type": "code",
+      "parameters": {
+        "jsCode": `
+const data = items[0].json;
+const now = new Date();
+const hour = now.getHours();
+const fv = data.produzione_fv_kw;
+
+// Regole semplificate
+let targetState = 'off';
+let targetTemp = 0;
+
+if (hour >= 6 && hour < 7) {
+  targetState = 'heat';
+  targetTemp = 37;
+} else if (hour >= 10 && hour < 20) {
+  targetState = 'heat';
+  targetTemp = 37;
+  // Logica FV semplificata: solo sopra/sotto 0.75kW
+  if (fv < 0.75) {
+    targetState = 'off';
+    targetTemp = 0;
+  }
+}
+
+// Determina azioni necessarie per ogni zona
+const actions = data.zones.map(zone => {
+  const needsChange = 
+    (zone.current_state !== targetState) || 
+    (targetState === 'heat' && zone.current_temp !== targetTemp);
+  
+  return {
+    zone: zone.name,
+    entity_id: zone.entity_id,
+    action: needsChange ? 'update' : 'skip',
+    current_state: zone.current_state,
+    target_state: targetState,
+    current_temp: zone.current_temp,
+    target_temp: targetTemp
+  };
+});
+
+return [{
+  json: {
+    timestamp: data.timestamp,
+    fv_production: fv,
+    actions: actions.filter(a => a.action === 'update')
+  }
+}];
+`
+      }
+    },
+    
+    // ESECUZIONE AZIONI
+    {
+      "name": "Split Actions",
+      "type": "splitInBatches",
+      "parameters": {
+        "batchSize": 1
+      }
+    },
+    
+    {
+      "name": "Applica Cambiamenti",
+      "type": "httpRequest",
+      "parameters": {
+        "method": "POST",
+        "url": "=http://10.241.185.242:8123/api/services/climate/{{ $json.target_state === 'off' ? 'set_hvac_mode' : 'set_temperature' }}",
+        "authentication": "genericCredentialType",
+        "sendBody": true,
+        "bodyParameters": {
+          "parameters": [
+            {
+              "name": "entity_id",
+              "value": "={{ $json.entity_id }}"
+            },
+            {
+              "name": "={{ $json.target_state === 'off' ? 'hvac_mode' : 'temperature' }}",
+              "value": "={{ $json.target_state === 'off' ? 'off' : $json.target_temp }}"
+            }
+          ]
+        }
+      }
+    },
+    
+    // NOTIFICA
+    {
+      "name": "Invia Resoconto",
+      "type": "telegram",
+      "parameters": {
+        "chatId": "1819276368",
+        "text": "=Riscaldamento aggiornato ({{ $now.format('HH:mm') }})\nFV: {{ $json.fv_production }} kW\nAzioni: {{ $json.actions.length }}"
+      }
+    }
+  ]
+}
